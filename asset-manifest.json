@@ -1,0 +1,15 @@
+{
+  "files": {
+    "main.css": "/PERO/static/css/main.9cc443e0.css",
+    "main.js": "/PERO/static/js/main.65917bcb.js",
+    "static/js/453.94da4cb8.chunk.js": "/PERO/static/js/453.94da4cb8.chunk.js",
+    "index.html": "/PERO/index.html",
+    "main.9cc443e0.css.map": "/PERO/static/css/main.9cc443e0.css.map",
+    "main.65917bcb.js.map": "/PERO/static/js/main.65917bcb.js.map",
+    "453.94da4cb8.chunk.js.map": "/PERO/static/js/453.94da4cb8.chunk.js.map"
+  },
+  "entrypoints": [
+    "static/css/main.9cc443e0.css",
+    "static/js/main.65917bcb.js"
+  ]
+}
