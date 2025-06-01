@@ -2,9 +2,11 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getDatabase, ref, set } from 'firebase/database';
 
-// Firebase Config - Using process.env variables as requested by the user
-// IMPORTANT: Ensure these environment variables are correctly set in your deployment environment.
-// In some live environments (like this Canvas), process.env might not be directly available.
+// Firebase Config - Using process.env variables as explicitly requested by the user
+// IMPORTANT: As previously discussed, in some live environments (like this Canvas),
+// process.env variables might not be directly available. If you encounter errors
+// like "process is not defined" or "apiKey is undefined", it means these
+// environment variables are not being set at runtime in this specific environment.
 const firebaseConfig = {
   apiKey: process.env.REACT_APP_FIREBASE_API_KEY,
   authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN,
@@ -17,13 +19,13 @@ const firebaseConfig = {
 
 // Basic validation for Firebase config
 if (!firebaseConfig.apiKey || !firebaseConfig.databaseURL || !firebaseConfig.projectId) {
-  console.warn("Firebase configuration is incomplete or missing values from process.env. This might lead to initialization errors.");
+  console.warn("Firebase configuration is incomplete or missing values from process.env. This might lead to initialization errors if environment variables are not set.");
 }
 
 // Firebase Initialization - Moved outside the App component
 const app = initializeApp(firebaseConfig);
 const database = getDatabase(app); // Global Realtime Database instance
-console.log("Firebase Realtime Database initialized globally with user-provided config.");
+console.log("Firebase Realtime Database initialized globally with user-provided process.env config.");
 
 
 // Define control modes
@@ -41,6 +43,10 @@ function App() {
   const [currentDirection, setCurrentDirection] = useState("CENTER");
   const [speed, setSpeed] = useState(1);
 
+  // New states for spray buttons
+  const [sprayLeftActive, setSprayLeftActive] = useState(false);
+  const [sprayRightActive, setSprayRightActive] = useState(false);
+
   // Refs for joystick elements (only used in JOYSTICK mode)
   const joystickContainerRef = useRef(null);
   const joystickKnobRef = useRef(null);
@@ -55,7 +61,7 @@ function App() {
   const [isDragging, setIsDragging] = useState(false);
 
   // Function to update Firebase Realtime Database with current direction and speed
-  const updateFirebase = useCallback(async (dir, spd) => {
+  const updateFirebase = useCallback(async (dir, spd, sLeftActive, sRightActive) => { // Added spray states
     // Check if the global 'database' instance is available
     if (!database) {
       console.log("Firebase Realtime DB not initialized.");
@@ -64,32 +70,35 @@ function App() {
 
     try {
       // Use firebaseConfig.appId for the Realtime Database path
+      // This will be undefined if process.env.REACT_APP_FIREBASE_APP_ID is not set.
       const appIdentifierForPath = firebaseConfig.appId || 'default-app-id';
       const dbPath = "/"; // Matches ESP32's firebasePath = "/"
       const dbRef = ref(database, dbPath); // Use the global 'database' instance
 
       // Set the direction and speed values at the root
       // The ESP32 code reads /up, /down, /left, /right, /speed
-      // So we update these specific keys.
+      // Now also /spray_left and /spray_right
       await set(dbRef, {
         up: dir === "UP" ? "1" : "0",
         down: dir === "DOWN" ? "1" : "0",
         left: dir === "LEFTY" ? "1" : "0",
         right: dir === "RIGHTY" ? "1" : "0",
         speed: String(spd), // Ensure speed is sent as a string to match ESP32's String(speed)
+        spray_left: sLeftActive ? "1" : "0", // Send spray_left state
+        spray_right: sRightActive ? "1" : "0", // Send spray_right state
         timestamp: new Date().toISOString(), // Add a timestamp for debugging/tracking
       });
-      console.log(`Firebase Realtime DB updated: Path=${dbPath}, Direction=${dir}, Speed=${spd}`);
+      console.log(`Firebase Realtime DB updated: Path=${dbPath}, Direction=${dir}, Speed=${spd}, SprayLeft=${sLeftActive}, SprayRight=${sRightActive}`);
     } catch (e) {
       console.error("Error updating Realtime Database: ", e);
     }
   }, []); // No dependencies related to Firebase instance as it's global
 
-  // Effect to update Firebase when direction or speed changes
+  // Effect to update Firebase when direction, speed, or spray states change
   useEffect(() => {
-    // Trigger update Firebase whenever direction or speed changes
-    updateFirebase(currentDirection, speed);
-  }, [currentDirection, speed, updateFirebase]);
+    // Trigger update Firebase whenever direction, speed, or spray states change
+    updateFirebase(currentDirection, speed, sprayLeftActive, sprayRightActive);
+  }, [currentDirection, speed, sprayLeftActive, sprayRightActive, updateFirebase]);
 
   // Joystick specific functions
   const getDominantDirection = useCallback((x, y) => {
@@ -124,8 +133,14 @@ function App() {
     }
   }, [getDominantDirection]);
 
-  const handleJoystickMove = useCallback((clientX, clientY) => {
+  const handleJoystickMove = useCallback((clientX, clientY, event) => { // Added 'event' parameter
     if (!isDragging) return;
+
+    // Prevent default touch behavior (like pull-to-refresh)
+    if (event && event.cancelable) { // Check if event is cancelable
+      event.preventDefault();
+    }
+
     const container = joystickContainerRef.current;
     if (container) {
       const rect = container.getBoundingClientRect();
@@ -151,10 +166,10 @@ function App() {
 
   useEffect(() => {
     if (mode === CONTROL_MODE.JOYSTICK) {
-      const onMouseMove = (e) => handleJoystickMove(e.clientX, e.clientY);
+      const onMouseMove = (e) => handleJoystickMove(e.clientX, e.clientY, e); // Pass event
       const onMouseUp = handleJoystickEnd;
       const onTouchMove = (e) => {
-        if (e.touches.length > 0) handleJoystickMove(e.touches[0].clientX, e.touches[0].clientY);
+        if (e.touches.length > 0) handleJoystickMove(e.touches[0].clientX, e.touches[0].clientY, e); // Pass event
       };
       const onTouchEnd = handleJoystickEnd;
 
@@ -180,12 +195,34 @@ function App() {
   }, [isDragging, handleJoystickMove, handleJoystickEnd, mode]);
 
   // Arrow button specific functions
-  const handleDirectionPress = useCallback((direction) => {
+  const handleDirectionPress = useCallback((direction, event) => {
+    // Prevent default touch/mouse behavior for long-press menus or text selection
+    if (event) {
+      event.preventDefault();
+    }
     setCurrentDirection(direction);
   }, []);
 
   const handleDirectionRelease = useCallback(() => {
     setCurrentDirection("CENTER");
+  }, []);
+
+  // New handlers for spray buttons
+  const handleSprayPress = useCallback((sprayType, event) => {
+    if (event) event.preventDefault(); // Prevent default browser behavior
+    if (sprayType === "left") {
+      setSprayLeftActive(true);
+    } else if (sprayType === "right") {
+      setSprayRightActive(true);
+    }
+  }, []);
+
+  const handleSprayRelease = useCallback((sprayType) => {
+    if (sprayType === "left") {
+      setSprayLeftActive(false);
+    } else if (sprayType === "right") {
+      setSprayRightActive(false);
+    }
   }, []);
 
   // Function to cycle speed
@@ -199,12 +236,22 @@ function App() {
       prevMode === CONTROL_MODE.ARROWS ? CONTROL_MODE.JOYSTICK : CONTROL_MODE.ARROWS
     );
     setCurrentDirection("CENTER");
+    // Also reset spray states when switching modes
+    setSprayLeftActive(false);
+    setSprayRightActive(false);
   };
 
-  // Common button styling
-  const buttonClass = "w-20 h-20 bg-blue-500 text-white text-3xl font-bold rounded-lg shadow-md flex items-center justify-center " +
+  // Common button styling, including `select-none` for user-select: none
+  const buttonClass = "w-20 h-20 bg-blue-500 text-white text-base font-bold rounded-lg shadow-md flex items-center justify-center " +
                       "hover:bg-blue-600 active:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-75 " +
-                      "transition-all duration-150 ease-in-out transform active:scale-95";
+                      "transition-all duration-150 ease-in-out transform active:scale-95 " +
+                      "select-none"; // Added select-none to prevent text selection
+
+  // Style for the new spray buttons when placed with joystick (can be adjusted)
+  const sprayButtonJoystickClass = "w-24 h-16 bg-green-500 text-white text-xl font-bold rounded-lg shadow-md flex items-center justify-center " +
+                                   "hover:bg-green-600 active:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-75 " +
+                                   "transition-all duration-150 ease-in-out transform active:scale-95 " +
+                                   "select-none";
 
   return (
     <div className="min-h-screen bg-gray-100 flex flex-col items-center p-4 font-inter">
@@ -226,6 +273,12 @@ function App() {
           <p className="text-2xl font-semibold text-gray-700">
             Speed: <span className="text-green-600">{speed}</span>
           </p>
+          <p className="text-lg font-semibold text-gray-700">
+            Spray Left: <span className={sprayLeftActive ? "text-red-500" : "text-gray-400"}>{sprayLeftActive ? "ON" : "OFF"}</span>
+          </p>
+          <p className="text-lg font-semibold text-gray-700">
+            Spray Right: <span className={sprayRightActive ? "text-red-500" : "text-gray-400"}>{sprayRightActive ? "ON" : "OFF"}</span>
+          </p>
 
           {/* Mode Toggle Button */}
           <button
@@ -237,50 +290,67 @@ function App() {
 
           {/* Conditional Rendering of Control Interface */}
           {mode === CONTROL_MODE.ARROWS ? (
-            // Directional Buttons Grid (Arrow Mode)
+            // Arrow Mode Controls with integrated Spray buttons
             <div className="grid grid-cols-3 gap-2 p-4 bg-gray-200 rounded-lg">
-              <div className="col-start-2">
-                <button
-                  onMouseDown={() => handleDirectionPress("UP")}
-                  onMouseUp={handleDirectionRelease}
-                  onTouchStart={() => handleDirectionPress("UP")}
-                  onTouchEnd={handleDirectionRelease}
-                  className={buttonClass}
-                >
-                  ↑
-                </button>
-              </div>
-              <div className="col-start-1">
-                <button
-                  onMouseDown={() => handleDirectionPress("LEFTY")}
-                  onMouseUp={handleDirectionRelease}
-                  onTouchStart={() => handleDirectionPress("LEFTY")}
-                  onTouchEnd={handleDirectionRelease}
-                  className={buttonClass}
-                >
-                  ←
-                </button>
-              </div>
+              {/* Row 1: Spray Left, Up Arrow, Spray Right */}
+              <button
+                onMouseDown={(e) => handleSprayPress("left", e)}
+                onMouseUp={() => handleSprayRelease("left")}
+                onTouchStart={(e) => handleSprayPress("left", e)}
+                onTouchEnd={() => handleSprayRelease("left")}
+                className={buttonClass}
+              >
+                Spray Left
+              </button>
+              <button
+                onMouseDown={(e) => handleDirectionPress("UP", e)}
+                onMouseUp={handleDirectionRelease}
+                onTouchStart={(e) => handleDirectionPress("UP", e)}
+                onTouchEnd={handleDirectionRelease}
+                className={buttonClass}
+              >
+                ↑
+              </button>
+              <button
+                onMouseDown={(e) => handleSprayPress("right", e)}
+                onMouseUp={() => handleSprayRelease("right")}
+                onTouchStart={(e) => handleSprayPress("right", e)}
+                onTouchEnd={() => handleSprayRelease("right")}
+                className={buttonClass}
+              >
+                Spray Right
+              </button>
+
+              {/* Row 2: Left Arrow, Center Placeholder, Right Arrow */}
+              <button
+                onMouseDown={(e) => handleDirectionPress("LEFTY", e)}
+                onMouseUp={handleDirectionRelease}
+                onTouchStart={(e) => handleDirectionPress("LEFTY", e)}
+                onTouchEnd={handleDirectionRelease}
+                className={buttonClass}
+              >
+                ←
+              </button>
               <div>
                 {/* Center placeholder for layout */}
                 <div className="w-20 h-20 flex items-center justify-center"></div>
               </div>
-              <div>
-                <button
-                  onMouseDown={() => handleDirectionPress("RIGHTY")}
-                  onMouseUp={handleDirectionRelease}
-                  onTouchStart={() => handleDirectionPress("RIGHTY")}
-                  onTouchEnd={handleDirectionRelease}
-                  className={buttonClass}
-                >
-                  →
-                </button>
-              </div>
+              <button
+                onMouseDown={(e) => handleDirectionPress("RIGHTY", e)}
+                onMouseUp={handleDirectionRelease}
+                onTouchStart={(e) => handleDirectionPress("RIGHTY", e)}
+                onTouchEnd={handleDirectionRelease}
+                className={buttonClass}
+              >
+                →
+              </button>
+
+              {/* Row 3: Down Arrow */}
               <div className="col-start-2">
                 <button
-                  onMouseDown={() => handleDirectionPress("DOWN")}
+                  onMouseDown={(e) => handleDirectionPress("DOWN", e)}
                   onMouseUp={handleDirectionRelease}
-                  onTouchStart={() => handleDirectionPress("DOWN")}
+                  onTouchStart={(e) => handleDirectionPress("DOWN", e)}
                   onTouchEnd={handleDirectionRelease}
                   className={buttonClass}
                 >
@@ -289,23 +359,46 @@ function App() {
               </div>
             </div>
           ) : (
-            // Joystick Container (Joystick Mode)
-            <div
-              ref={joystickContainerRef}
-              className="relative w-40 h-40 bg-gray-300 rounded-full shadow-lg flex items-center justify-center cursor-grab active:cursor-grabbing"
-              onMouseDown={(e) => handleJoystickStart(e.clientX, e.clientY)}
-              onTouchStart={(e) => {
-                if (e.touches.length > 0) handleJoystickStart(e.touches[0].clientX, e.touches[0].clientY);
-              }}
-            >
-              {/* Joystick Knob */}
-              <div
-                ref={joystickKnobRef}
-                className="absolute w-20 h-20 bg-blue-500 rounded-full shadow-md transition-transform duration-75 ease-out"
-                style={{
-                  transform: `translate(${joystickPos.x}px, ${joystickPos.y}px)`,
-                }}
-              ></div>
+            // Joystick Container (Joystick Mode) with Spray buttons
+            <div className="flex flex-col items-center space-y-4"> {/* Added flex column for vertical stacking */}
+                <div
+                    ref={joystickContainerRef}
+                    className="relative w-40 h-40 bg-gray-300 rounded-full shadow-lg flex items-center justify-center cursor-grab active:cursor-grabbing"
+                    onMouseDown={(e) => handleJoystickStart(e.clientX, e.clientY)}
+                    onTouchStart={(e) => {
+                        if (e.touches.length > 0) handleJoystickStart(e.touches[0].clientX, e.touches[0].clientY);
+                    }}
+                >
+                    {/* Joystick Knob */}
+                    <div
+                        ref={joystickKnobRef}
+                        className="absolute w-20 h-20 bg-blue-500 rounded-full shadow-md transition-transform duration-75 ease-out"
+                        style={{
+                            transform: `translate(${joystickPos.x}px, ${joystickPos.y}px)`,
+                        }}
+                    ></div>
+                </div>
+                {/* Spray Buttons below the joystick */}
+                <div className="flex justify-center space-x-4">
+                    <button
+                        onMouseDown={(e) => handleSprayPress("left", e)}
+                        onMouseUp={() => handleSprayRelease("left")}
+                        onTouchStart={(e) => handleSprayPress("left", e)}
+                        onTouchEnd={() => handleSprayRelease("left")}
+                        className={sprayButtonJoystickClass}
+                    >
+                        Spray Left
+                    </button>
+                    <button
+                        onMouseDown={(e) => handleSprayPress("right", e)}
+                        onMouseUp={() => handleSprayRelease("right")}
+                        onTouchStart={(e) => handleSprayPress("right", e)}
+                        onTouchEnd={() => handleSprayRelease("right")}
+                        className={sprayButtonJoystickClass}
+                    >
+                        Spray Right
+                    </button>
+                </div>
             </div>
           )}
 
@@ -322,9 +415,9 @@ function App() {
       {/* Footer */}
       <div className="mt-8 text-gray-500 text-sm text-center">
         {mode === CONTROL_MODE.ARROWS ? (
-          <p>Press and hold the on-screen arrow buttons to control direction.</p>
+          <p>Press and hold the on-screen arrow buttons to control direction and spray.</p>
         ) : (
-          <p>Drag the joystick to control direction.</p>
+          <p>Drag the joystick to control direction. Use the buttons below for spray.</p>
         )}
         <p>Click the "Cycle Speed" button to change speed.</p>
         <p>Data is sent to Firebase Realtime Database.</p>
