@@ -1,12 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getDatabase, ref, set } from 'firebase/database';
+import { getDatabase, ref, onValue, off, update } from 'firebase/database';
 
-// Firebase Config - Using process.env variables as explicitly requested by the user
-// IMPORTANT: As previously discussed, in some live environments (like this Canvas),
-// process.env variables might not be directly available. If you encounter errors
-// like "process is not defined" or "apiKey is undefined", it means these
-// environment variables are not being set at runtime in this specific environment.
+// Firebase Configuration
 const firebaseConfig = {
   apiKey: process.env.REACT_APP_FIREBASE_API_KEY,
   authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN,
@@ -17,108 +13,243 @@ const firebaseConfig = {
   appId: process.env.REACT_APP_FIREBASE_APP_ID,
 };
 
-// Basic validation for Firebase config
+// Validate Firebase config
 if (!firebaseConfig.apiKey || !firebaseConfig.databaseURL || !firebaseConfig.projectId) {
-  console.warn("Firebase configuration is incomplete or missing values from process.env. This might lead to initialization errors if environment variables are not set.");
+  console.warn("Firebase configuration is incomplete. Check your environment variables.");
 }
 
-// Firebase Initialization - Moved outside the App component
+// Initialize Firebase
 const app = initializeApp(firebaseConfig);
-const database = getDatabase(app); // Global Realtime Database instance
-console.log("Firebase Realtime Database initialized globally with user-provided process.env config.");
+const database = getDatabase(app);
 
-
-// Define control modes
+// Control Modes
 const CONTROL_MODE = {
   JOYSTICK: 'JOYSTICK',
   ARROWS: 'ARROWS'
 };
 
-// Main App component
-function App() {
-  // State for current control mode
-  const [mode, setMode] = useState(CONTROL_MODE.ARROWS); // Start with arrows as default
+// Camera Stream URLs
+const BASE_CAMERA_STREAM_URL = "http://rccarcam.local:81/stream";
+const MOBILE_CAMERA_STREAM_URL = "http://rccarcam.local:81/stream";
 
-  // State for current direction and speed
+// Google Maps API Key
+const MAPS_API_KEY = "AIzaSyCzEccIZNFiLG8VnIp-btN5IYXZkZkb7Kc";
+
+function App() {
+  // Control States
+  const [mode, setMode] = useState(CONTROL_MODE.ARROWS);
   const [currentDirection, setCurrentDirection] = useState("CENTER");
   const [speed, setSpeed] = useState(1);
-
-  // New states for spray buttons
   const [sprayLeftActive, setSprayLeftActive] = useState(false);
   const [sprayRightActive, setSprayRightActive] = useState(false);
 
-  // Refs for joystick elements (only used in JOYSTICK mode)
+  // Camera Stream States
+  const [videoStreamError, setVideoStreamError] = useState(false);
+  const [cctvStream, setCctvStream] = useState(""); // Current URL being loaded in iframe
+  const [lastGoodStreamUrl, setLastGoodStreamUrl] = useState(""); // To store the last successfully loaded stream URL
+  const iframeRef = useRef(null);
+
+  // Joystick Refs and States
   const joystickContainerRef = useRef(null);
   const joystickKnobRef = useRef(null);
-
-  // Constants for joystick calibration (adjust as needed for UI)
-  const joystickRadius = 70; // Radius of the joystick movement area
-  const deadZoneRadius = 20; // Radius for the "CENTER" dead zone
-  const axisPriorityThreshold = 0.5; // Relative threshold for dominant axis (0 to 1)
-
-  // State for joystick position and dragging status (only used in JOYSTICK mode)
   const [joystickPos, setJoystickPos] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
 
-  // Function to update Firebase Realtime Database with current direction and speed
-  const updateFirebase = useCallback(async (dir, spd, sLeftActive, sRightActive) => { // Added spray states
-    // Check if the global 'database' instance is available
-    if (!database) {
-      console.log("Firebase Realtime DB not initialized.");
-      return;
-    }
+  // Sensor Data States
+  const [accelerometerData, setAccelerometerData] = useState({ x: 'N/A', y: 'N/A', z: 'N/A' });
+  const [ultrasonicDistance, setUltrasonicDistance] = useState('N/A');
+  const [gpsLocation, setGpsLocation] = useState({ 
+    latitude: 'N/A', 
+    longitude: 'N/A', 
+    geolat: 'N/A', 
+    geolong: 'N/A' 
+  });
+  const [motionStatus, setMotionStatus] = useState('N/A');
+  const [gpsSource, setGpsSource] = useState('NEO6');
+
+  // Map Refs
+  const mapRef = useRef(null);
+  const googleMap = useRef(null);
+  const googleMarker = useRef(null);
+
+  // Constants
+  const joystickRadius = 70;
+  const deadZoneRadius = 20;
+  const axisPriorityThreshold = 0.5;
+  const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+
+  // Update Firebase with control data
+  const updateFirebase = useCallback(async (dir, spd, sLeftActive, sRightActive) => {
+    if (!database) return;
 
     try {
-      // Use firebaseConfig.appId for the Realtime Database path
-      // This will be undefined if process.env.REACT_APP_FIREBASE_APP_ID is not set.
-      const appIdentifierForPath = firebaseConfig.appId || 'default-app-id';
-      const dbPath = "/"; // Matches ESP32's firebasePath = "/"
-      const dbRef = ref(database, dbPath); // Use the global 'database' instance
-
-      // Set the direction and speed values at the root
-      // The ESP32 code reads /up, /down, /left, /right, /speed
-      // Now also /spray_left and /spray_right
-      await set(dbRef, {
+      const dbRef = ref(database, "/");
+      await update(dbRef, {
         up: dir === "UP" ? "1" : "0",
         down: dir === "DOWN" ? "1" : "0",
         left: dir === "LEFTY" ? "1" : "0",
         right: dir === "RIGHTY" ? "1" : "0",
-        speed: String(spd), // Ensure speed is sent as a string to match ESP32's String(speed)
-        spray_left: sLeftActive ? "1" : "0", // Send spray_left state
-        spray_right: sRightActive ? "1" : "0", // Send spray_right state
-        timestamp: new Date().toISOString(), // Add a timestamp for debugging/tracking
+        speed: String(spd),
+        spray_left: sLeftActive ? "1" : "0",
+        spray_right: sRightActive ? "1" : "0",
+        timestamp: new Date().toISOString(),
       });
-      console.log(`Firebase Realtime DB updated: Path=${dbPath}, Direction=${dir}, Speed=${spd}, SprayLeft=${sLeftActive}, SprayRight=${sRightActive}`);
     } catch (e) {
-      console.error("Error updating Realtime Database: ", e);
+      console.error("Error updating Firebase:", e);
     }
-  }, []); // No dependencies related to Firebase instance as it's global
+  }, []);
 
-  // Effect to update Firebase when direction, speed, or spray states change
+  // Camera Stream Management
   useEffect(() => {
-    // Trigger update Firebase whenever direction, speed, or spray states change
-    updateFirebase(currentDirection, speed, sprayLeftActive, sprayRightActive);
-  }, [currentDirection, speed, sprayLeftActive, sprayRightActive, updateFirebase]);
+    const streamSource = isMobile ? MOBILE_CAMERA_STREAM_URL : BASE_CAMERA_STREAM_URL;
 
-  // Joystick specific functions
+    const testStreamConnection = async () => {
+      const timestampedUrl = `${streamSource}?timestamp=${Date.now()}`;
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000); // 3-second timeout
+
+        await fetch(timestampedUrl, { 
+          method: 'HEAD', 
+          mode: 'no-cors',
+          signal: controller.signal // Abort signal
+        });
+        clearTimeout(timeoutId);
+
+        setVideoStreamError(false);
+        setCctvStream(timestampedUrl);
+        setLastGoodStreamUrl(timestampedUrl); // Update last good URL
+        // console.log("Camera stream reachable."); // Removed this log
+      } catch (error) {
+        // console.error("Camera stream check failed:", error); // Removed this log
+        setVideoStreamError(true);
+        if (lastGoodStreamUrl) {
+          setCctvStream(lastGoodStreamUrl); // Keep showing last good frame
+        } else {
+          setCctvStream(""); // Ensure no broken iframe is loaded if no good URL ever existed
+        }
+      }
+    };
+
+    // Initial load
+    testStreamConnection();
+
+    // Set up periodic refresh
+    const refreshInterval = setInterval(testStreamConnection, 5000);
+
+    // Handle visibility changes
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        testStreamConnection();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      clearInterval(refreshInterval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [isMobile, lastGoodStreamUrl]);
+
+  // Manual camera reconnect
+  const handleManualReconnect = useCallback(() => {
+    setVideoStreamError(false); // Optimistically assume it will reconnect
+    const streamSource = isMobile ? MOBILE_CAMERA_STREAM_URL : BASE_CAMERA_STREAM_URL;
+    const timestampedUrl = `${streamSource}?timestamp=${Date.now()}`;
+    setCctvStream(timestampedUrl); // Attempt to load the new stream
+  }, [isMobile]);
+
+  // Sensor Data Listener
+  useEffect(() => {
+    if (!database) return;
+
+    const rootDataRef = ref(database, '/');
+    const unsubscribeRootData = onValue(rootDataRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        setAccelerometerData({
+          x: data.accel_x !== undefined ? data.accel_x.toFixed(2) : 'N/A',
+          y: data.accel_y !== undefined ? data.accel_y.toFixed(2) : 'N/A',
+          z: data.accel_z !== undefined ? data.accel_z.toFixed(2) : 'N/A'
+        });
+        setUltrasonicDistance(data.distance_cm !== undefined ? data.distance_cm.toFixed(2) : 'N/A');
+        setMotionStatus(data.motion !== undefined ? data.motion : 'N/A');
+        setGpsLocation({
+          latitude: data.latitude !== undefined ? parseFloat(data.latitude).toFixed(6) : 'N/A',
+          longitude: data.longitude !== undefined ? parseFloat(data.longitude).toFixed(6) : 'N/A',
+          geolat: data.geolat !== undefined ? parseFloat(data.geolat).toFixed(6) : 'N/A',
+          geolong: data.geolong !== undefined ? parseFloat(data.geolong).toFixed(6) : 'N/A'
+        });
+      }
+    });
+
+    return () => off(rootDataRef, 'value', unsubscribeRootData);
+  }, []);
+
+  // Initialize Google Map
+  useEffect(() => {
+    const initMap = () => {
+      if (mapRef.current && window.google) {
+        const initialLatLng = { lat: 6.4419, lng: 100.1989 };
+        googleMap.current = new window.google.maps.Map(mapRef.current, {
+          center: initialLatLng,
+          zoom: 16,
+          fullscreenControl: false,
+          mapTypeControl: false,
+          streetViewControl: false,
+        });
+        googleMarker.current = new window.google.maps.Marker({
+          position: initialLatLng,
+          map: googleMap.current,
+          title: 'RC Car Location',
+        });
+      }
+    };
+
+    if (MAPS_API_KEY && MAPS_API_KEY !== 'YOUR_Maps_API_KEY') {
+      const script = document.createElement('script');
+      script.id = 'google-maps-script';
+      script.src = `https://maps.googleapis.com/maps/api/js?key=${MAPS_API_KEY}&callback=initMap`;
+      script.async = true;
+      script.defer = true;
+      window.initMap = initMap;
+      document.head.appendChild(script);
+    }
+  }, []);
+
+  // Update Map Marker
+  useEffect(() => {
+    if (googleMap.current && googleMarker.current) {
+      const currentLat = gpsSource === 'NEO6' ? gpsLocation.latitude : gpsLocation.geolat;
+      const currentLng = gpsSource === 'NEO6' ? gpsLocation.longitude : gpsLocation.geolong;
+      
+      const latNum = parseFloat(currentLat);
+      const lngNum = parseFloat(currentLng);
+      
+      if (!isNaN(latNum) && !isNaN(lngNum)) {
+        const newLatLng = new window.google.maps.LatLng(latNum, lngNum);
+        googleMarker.current.setPosition(newLatLng);
+        googleMap.current.setCenter(newLatLng);
+      }
+    }
+  }, [gpsLocation, gpsSource]);
+
+  // Joystick Control Functions
   const getDominantDirection = useCallback((x, y) => {
     const normalizedX = x / joystickRadius;
     const normalizedY = y / joystickRadius;
     const distFromCenter = Math.sqrt(normalizedX * normalizedX + normalizedY * normalizedY);
 
-    if (distFromCenter < (deadZoneRadius / joystickRadius)) {
-      return "CENTER";
-    }
+    if (distFromCenter < (deadZoneRadius / joystickRadius)) return "CENTER";
 
     const absNormalizedX = Math.abs(normalizedX);
     const absNormalizedY = Math.abs(normalizedY);
 
     if (absNormalizedX > absNormalizedY * axisPriorityThreshold) {
       return normalizedX > 0 ? "RIGHTY" : "LEFTY";
-    } else if (absNormalizedY > absNormalizedX * axisPriorityThreshold) {
-      return normalizedY > 0 ? "DOWN" : "UP";
     }
-    return "CENTER";
+    return normalizedY > 0 ? "DOWN" : "UP";
   }, [joystickRadius, deadZoneRadius, axisPriorityThreshold]);
 
   const handleJoystickStart = useCallback((clientX, clientY) => {
@@ -133,13 +264,9 @@ function App() {
     }
   }, [getDominantDirection]);
 
-  const handleJoystickMove = useCallback((clientX, clientY, event) => { // Added 'event' parameter
+  const handleJoystickMove = useCallback((clientX, clientY, event) => {
     if (!isDragging) return;
-
-    // Prevent default touch behavior (like pull-to-refresh)
-    if (event && event.cancelable) { // Check if event is cancelable
-      event.preventDefault();
-    }
+    if (event?.cancelable) event.preventDefault();
 
     const container = joystickContainerRef.current;
     if (container) {
@@ -149,10 +276,12 @@ function App() {
       let newX = clientX - rect.left - centerX;
       let newY = clientY - rect.top - centerY;
       const distance = Math.sqrt(newX * newX + newY * newY);
+      
       if (distance > joystickRadius) {
         newX = (newX / distance) * joystickRadius;
         newY = (newY / distance) * joystickRadius;
       }
+      
       setJoystickPos({ x: newX, y: newY });
       setCurrentDirection(getDominantDirection(newX, newY));
     }
@@ -164,12 +293,13 @@ function App() {
     setCurrentDirection("CENTER");
   }, []);
 
+  // Joystick Event Listeners
   useEffect(() => {
     if (mode === CONTROL_MODE.JOYSTICK) {
-      const onMouseMove = (e) => handleJoystickMove(e.clientX, e.clientY, e); // Pass event
+      const onMouseMove = (e) => handleJoystickMove(e.clientX, e.clientY, e);
       const onMouseUp = handleJoystickEnd;
       const onTouchMove = (e) => {
-        if (e.touches.length > 0) handleJoystickMove(e.touches[0].clientX, e.touches[0].clientY, e); // Pass event
+        if (e.touches.length > 0) handleJoystickMove(e.touches[0].clientX, e.touches[0].clientY, e);
       };
       const onTouchEnd = handleJoystickEnd;
 
@@ -178,12 +308,7 @@ function App() {
         window.addEventListener('mouseup', onMouseUp);
         window.addEventListener('touchmove', onTouchMove, { passive: false });
         window.addEventListener('touchend', onTouchEnd);
-      } else {
-        window.removeEventListener('mousemove', onMouseMove);
-        window.removeEventListener('mouseup', onMouseUp);
-        window.removeEventListener('touchmove', onTouchMove);
-        window.removeEventListener('touchend', onTouchEnd);
-      };
+      }
 
       return () => {
         window.removeEventListener('mousemove', onMouseMove);
@@ -194,12 +319,9 @@ function App() {
     }
   }, [isDragging, handleJoystickMove, handleJoystickEnd, mode]);
 
-  // Arrow button specific functions
+  // Control Button Handlers
   const handleDirectionPress = useCallback((direction, event) => {
-    // Prevent default touch/mouse behavior for long-press menus or text selection
-    if (event) {
-      event.preventDefault();
-    }
+    event?.preventDefault();
     setCurrentDirection(direction);
   }, []);
 
@@ -207,92 +329,100 @@ function App() {
     setCurrentDirection("CENTER");
   }, []);
 
-  // New handlers for spray buttons
   const handleSprayPress = useCallback((sprayType, event) => {
-    if (event) event.preventDefault(); // Prevent default browser behavior
-    if (sprayType === "left") {
-      setSprayLeftActive(true);
-    } else if (sprayType === "right") {
-      setSprayRightActive(true);
-    }
+    event?.preventDefault();
+    sprayType === "left" ? setSprayLeftActive(true) : setSprayRightActive(true);
   }, []);
 
   const handleSprayRelease = useCallback((sprayType) => {
-    if (sprayType === "left") {
-      setSprayLeftActive(false);
-    } else if (sprayType === "right") {
-      setSprayRightActive(false);
-    }
+    sprayType === "left" ? setSprayLeftActive(false) : setSprayRightActive(false);
   }, []);
 
-  // Function to cycle speed
-  const toggleSpeed = () => {
-    setSpeed(prevSpeed => (prevSpeed % 3) + 1);
-  };
-
-  // Function to toggle control mode
+  const toggleSpeed = () => setSpeed(prev => (prev % 3) + 1);
   const toggleControlMode = () => {
-    setMode(prevMode =>
-      prevMode === CONTROL_MODE.ARROWS ? CONTROL_MODE.JOYSTICK : CONTROL_MODE.ARROWS
-    );
+    setMode(prev => prev === CONTROL_MODE.ARROWS ? CONTROL_MODE.JOYSTICK : CONTROL_MODE.ARROWS);
     setCurrentDirection("CENTER");
-    // Also reset spray states when switching modes
     setSprayLeftActive(false);
     setSprayRightActive(false);
   };
 
-  // Common button styling, including `select-none` for user-select: none
+  // Button Styles
   const buttonClass = "w-20 h-20 bg-blue-500 text-white text-base font-bold rounded-lg shadow-md flex items-center justify-center " +
-                      "hover:bg-blue-600 active:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-75 " +
-                      "transition-all duration-150 ease-in-out transform active:scale-95 " +
-                      "select-none"; // Added select-none to prevent text selection
+    "hover:bg-blue-600 active:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-75 " +
+    "transition-all duration-150 ease-in-out transform active:scale-95 select-none";
 
-  // Style for the new spray buttons when placed with joystick (can be adjusted)
   const sprayButtonJoystickClass = "w-24 h-16 bg-green-500 text-white text-xl font-bold rounded-lg shadow-md flex items-center justify-center " +
-                                   "hover:bg-green-600 active:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-75 " +
-                                   "transition-all duration-150 ease-in-out transform active:scale-95 " +
-                                   "select-none";
+    "hover:bg-green-600 active:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-75 " +
+    "transition-all duration-150 ease-in-out transform active:scale-95 select-none";
+
+  const mainBoxStyleClass = "mt-4 p-6 bg-white rounded-lg shadow-xl w-full max-w-2xl text-center";
 
   return (
     <div className="min-h-screen bg-gray-100 flex flex-col items-center p-4 font-inter">
-      {/* Header */}
       <header className="w-full bg-blue-700 text-white p-4 shadow-lg fixed top-0 left-0 z-10">
         <div className="container mx-auto flex justify-between items-center">
           <h1 className="text-xl md:text-3xl font-bold">PERO Monitoring System</h1>
-          {/* You can add navigation links or other elements here if needed */}
         </div>
       </header>
 
-      {/* Main content area - adjusted padding to account for fixed header */}
-      <div className="flex flex-col items-center justify-center pt-20 pb-4"> {/* Added pt-20 to push content below fixed header */}
+      <div className="flex flex-col items-center justify-center pt-20 pb-4 w-full max-w-2xl mx-auto">
+        {/* Camera Stream Section */}
+        <div className="w-full bg-gray-800 rounded-lg shadow-lg mb-4 overflow-hidden flex flex-col items-center justify-center aspect-video">
+          {videoStreamError && !lastGoodStreamUrl ? (
+            // Only show full error if there's no last good frame to display
+            <div className="p-4 bg-white border border-red-500 rounded-lg text-gray-800 w-full h-full flex flex-col justify-center items-center">
+              <p className="text-4xl">❌</p> 
+              <p className="text-xl font-bold text-red-700 mt-2">CAMERA OFFLINE</p>
+              <button
+                onClick={handleManualReconnect}
+                className="mt-4 px-6 py-2 bg-red-600 text-white font-bold rounded-lg shadow-md hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-opacity-75 transition-all duration-200 ease-in-out transform hover:scale-105"
+              >
+                Attempt Reconnect
+              </button>
+            </div>
+          ) : (
+            <iframe
+              ref={iframeRef}
+              src={cctvStream} 
+              width="600"
+              height="450"
+              title="CCTV Camera"
+              frameBorder="0"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+              allowFullScreen
+              className="w-full h-full"
+              onError={() => {
+                // console.error("Iframe failed to load stream:", cctvStream); // Removed this log
+                setVideoStreamError(true);
+                if (cctvStream !== lastGoodStreamUrl && lastGoodStreamUrl) {
+                    setCctvStream(lastGoodStreamUrl);
+                } else if (!lastGoodStreamUrl) {
+                    setCctvStream("");
+                }
+              }}
+            ></iframe>
+          )}
+
+          {/* This overlay text is now completely removed */}
+          {/*
+          {videoStreamError && lastGoodStreamUrl && (
+            <div className="absolute inset-x-0 bottom-0 bg-black bg-opacity-75 text-white p-2 text-center text-sm">
+              <p>⚠️ **CAMERA OFFLINE:** Displaying last available frame.</p>
+              <button
+                onClick={handleManualReconnect}
+                className="mt-1 px-3 py-1 bg-red-600 text-white text-xs font-bold rounded-md hover:bg-red-700"
+              >
+                Reconnect
+              </button>
+            </div>
+          )}
+          */}
+        </div>
+
         {/* Control Panel */}
-        <div className="mt-8 p-6 bg-white rounded-lg shadow-xl flex flex-col items-center space-y-4">
-          <p className="text-2xl font-semibold text-gray-700">
-            Direction: <span className="text-blue-600">{currentDirection}</span>
-          </p>
-          <p className="text-2xl font-semibold text-gray-700">
-            Speed: <span className="text-green-600">{speed}</span>
-          </p>
-          <p className="text-lg font-semibold text-gray-700">
-            Spray Left: <span className={sprayLeftActive ? "text-red-500" : "text-gray-400"}>{sprayLeftActive ? "ON" : "OFF"}</span>
-          </p>
-          <p className="text-lg font-semibold text-gray-700">
-            Spray Right: <span className={sprayRightActive ? "text-red-500" : "text-gray-400"}>{sprayRightActive ? "ON" : "OFF"}</span>
-          </p>
-
-          {/* Mode Toggle Button */}
-          <button
-            onClick={toggleControlMode}
-            className="px-6 py-3 bg-purple-600 text-white font-bold rounded-lg shadow-md hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-opacity-75 transition-all duration-200 ease-in-out transform hover:scale-105"
-          >
-            Switch to {mode === CONTROL_MODE.ARROWS ? "Joystick" : "Arrow Buttons"} Mode
-          </button>
-
-          {/* Conditional Rendering of Control Interface */}
+        <div className={mainBoxStyleClass}>
           {mode === CONTROL_MODE.ARROWS ? (
-            // Arrow Mode Controls with integrated Spray buttons
-            <div className="grid grid-cols-3 gap-2 p-4 bg-gray-200 rounded-lg">
-              {/* Row 1: Spray Left, Up Arrow, Spray Right */}
+            <div className="grid grid-cols-3 gap-2 p-4 bg-gray-200 rounded-lg w-fit mx-auto mb-4">
               <button
                 onMouseDown={(e) => handleSprayPress("left", e)}
                 onMouseUp={() => handleSprayRelease("left")}
@@ -321,7 +451,6 @@ function App() {
                 Spray Right
               </button>
 
-              {/* Row 2: Left Arrow, Center Placeholder, Right Arrow */}
               <button
                 onMouseDown={(e) => handleDirectionPress("LEFTY", e)}
                 onMouseUp={handleDirectionRelease}
@@ -331,10 +460,7 @@ function App() {
               >
                 ←
               </button>
-              <div>
-                {/* Center placeholder for layout */}
-                <div className="w-20 h-20 flex items-center justify-center"></div>
-              </div>
+              <div className="w-20 h-20 flex items-center justify-center"></div>
               <button
                 onMouseDown={(e) => handleDirectionPress("RIGHTY", e)}
                 onMouseUp={handleDirectionRelease}
@@ -345,7 +471,6 @@ function App() {
                 →
               </button>
 
-              {/* Row 3: Down Arrow */}
               <div className="col-start-2">
                 <button
                   onMouseDown={(e) => handleDirectionPress("DOWN", e)}
@@ -359,68 +484,150 @@ function App() {
               </div>
             </div>
           ) : (
-            // Joystick Container (Joystick Mode) with Spray buttons
-            <div className="flex flex-col items-center space-y-4"> {/* Added flex column for vertical stacking */}
+            <div className="flex flex-col items-center space-y-4 mb-4">
+              <div
+                ref={joystickContainerRef}
+                className="relative w-40 h-40 bg-gray-300 rounded-full shadow-lg flex items-center justify-center cursor-grab active:cursor-grabbing"
+                onMouseDown={(e) => handleJoystickStart(e.clientX, e.clientY)}
+                onTouchStart={(e) => { if (e.touches.length > 0) handleJoystickStart(e.touches[0].clientX, e.touches[0].clientY); }}
+              >
                 <div
-                    ref={joystickContainerRef}
-                    className="relative w-40 h-40 bg-gray-300 rounded-full shadow-lg flex items-center justify-center cursor-grab active:cursor-grabbing"
-                    onMouseDown={(e) => handleJoystickStart(e.clientX, e.clientY)}
-                    onTouchStart={(e) => {
-                        if (e.touches.length > 0) handleJoystickStart(e.touches[0].clientX, e.touches[0].clientY);
-                    }}
+                  ref={joystickKnobRef}
+                  className="absolute w-20 h-20 bg-blue-500 rounded-full shadow-md transition-transform duration-75 ease-out"
+                  style={{ transform: `translate(${joystickPos.x}px, ${joystickPos.y}px)` }}
+                />
+              </div>
+              <div className="flex justify-center space-x-4">
+                <button
+                  onMouseDown={(e) => handleSprayPress("left", e)}
+                  onMouseUp={() => handleSprayRelease("left")}
+                  onTouchStart={(e) => handleSprayPress("left", e)}
+                  onTouchEnd={() => handleSprayRelease("left")}
+                  className={sprayButtonJoystickClass}
                 >
-                    {/* Joystick Knob */}
-                    <div
-                        ref={joystickKnobRef}
-                        className="absolute w-20 h-20 bg-blue-500 rounded-full shadow-md transition-transform duration-75 ease-out"
-                        style={{
-                            transform: `translate(${joystickPos.x}px, ${joystickPos.y}px)`,
-                        }}
-                    ></div>
-                </div>
-                {/* Spray Buttons below the joystick */}
-                <div className="flex justify-center space-x-4">
-                    <button
-                        onMouseDown={(e) => handleSprayPress("left", e)}
-                        onMouseUp={() => handleSprayRelease("left")}
-                        onTouchStart={(e) => handleSprayPress("left", e)}
-                        onTouchEnd={() => handleSprayRelease("left")}
-                        className={sprayButtonJoystickClass}
-                    >
-                        Spray Left
-                    </button>
-                    <button
-                        onMouseDown={(e) => handleSprayPress("right", e)}
-                        onMouseUp={() => handleSprayRelease("right")}
-                        onTouchStart={(e) => handleSprayPress("right", e)}
-                        onTouchEnd={() => handleSprayRelease("right")}
-                        className={sprayButtonJoystickClass}
-                    >
-                        Spray Right
-                    </button>
-                </div>
+                  Spray Left
+                </button>
+                <button
+                  onMouseDown={(e) => handleSprayPress("right", e)}
+                  onMouseUp={() => handleSprayRelease("right")}
+                  onTouchStart={(e) => handleSprayPress("right", e)}
+                  onTouchEnd={() => handleSprayRelease("right")}
+                  className={sprayButtonJoystickClass}
+                >
+                  Spray Right
+                </button>
+              </div>
             </div>
           )}
 
-          {/* Speed Toggle Button */}
-          <button
-            onClick={toggleSpeed}
-            className="px-6 py-3 bg-indigo-600 text-white font-bold rounded-lg shadow-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-opacity-75 transition-all duration-200 ease-in-out transform hover:scale-105"
-          >
-            Cycle Speed (Current: {speed})
-          </button>
+          <div className="flex flex-col items-center space-y-4">
+            <button 
+              onClick={toggleSpeed} 
+              className="px-6 py-3 bg-indigo-600 text-white font-bold rounded-lg shadow-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-opacity-75 transition-all duration-200 ease-in-out transform hover:scale-105"
+            >
+              Cycle Speed (Current: {speed})
+            </button>
+
+            <button 
+              onClick={toggleControlMode} 
+              className="px-6 py-3 bg-purple-600 text-white font-bold rounded-lg shadow-md hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-opacity-75 transition-all duration-200 ease-in-out transform hover:scale-105"
+            >
+              Switch to {mode === CONTROL_MODE.ARROWS ? "Joystick" : "Arrow Buttons"} Mode
+            </button>
+
+            <div className="text-center mt-4">
+              <p className="text-2xl font-semibold text-gray-700">
+                Direction: <span className="text-blue-600">{currentDirection}</span>
+              </p>
+              <p className="text-2xl font-semibold text-gray-700">
+                Speed: <span className="text-green-600">{speed}</span>
+              </p>
+              <p className="text-lg font-semibold text-gray-700">
+                Spray Left: <span className={sprayLeftActive ? "text-red-500" : "text-gray-400"}>{sprayLeftActive ? "ON" : "OFF"}</span>
+              </p>
+              <p className="text-lg font-semibold text-gray-700">
+                Spray Right: <span className={sprayRightActive ? "text-red-500" : "text-gray-400"}>{sprayRightActive ? "ON" : "OFF"}</span>
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Sensor Data Section */}
+        <div className={mainBoxStyleClass}>
+          <h2 className="text-xl font-bold mb-2 text-gray-800">Sensor Data</h2>
+          <p className="text-lg font-semibold text-gray-700">
+            Accelerometer:
+            <span className="text-purple-600">
+              X: {accelerometerData.x}, Y: {accelerometerData.y}, Z: {accelerometerData.z}
+            </span>
+          </p>
+          <p className="text-lg font-semibold text-gray-700 mt-2">
+            Ultrasonic Distance: <span className="text-orange-600">{ultrasonicDistance} cm</span>
+          </p>
+          <p className="text-lg font-semibold text-gray-700 mt-2">
+            Motion: <span className={motionStatus === "YES" ? "text-green-500" : "text-red-500"}>{motionStatus}</span>
+          </p>
+        </div>
+
+        {/* GPS Data Section */}
+        <div className={mainBoxStyleClass}>
+          <h2 className="text-xl font-bold mb-2 text-gray-800">GPS Location</h2>
+          <div className="flex items-center justify-center space-x-4 mb-4">
+            <button
+              onClick={() => setGpsSource('NEO6')}
+              className={`px-4 py-2 rounded-lg font-bold transition-colors duration-200 ${gpsSource === 'NEO6' ? 'bg-blue-600 text-white' : 'bg-gray-300 text-gray-700 hover:bg-gray-400'}`}
+            >
+              NEO6
+            </button>
+            <button
+              onClick={() => setGpsSource('GEOLOCATION')}
+              className={`px-4 py-2 rounded-lg font-bold transition-colors duration-200 ${gpsSource === 'GEOLOCATION' ? 'bg-blue-600 text-white' : 'bg-gray-300 text-gray-700 hover:bg-gray-400'}`}
+            >
+              GEOLOCATION
+            </button>
+          </div>
+          {gpsSource === 'NEO6' ? (
+            <div>
+              <p className="text-lg font-semibold text-gray-700">
+                Lat: <span className="text-teal-600">{gpsLocation.latitude}</span>
+              </p>
+              <p className="text-lg font-semibold text-gray-700">
+                Long: <span className="text-teal-600">{gpsLocation.longitude}</span>
+              </p>
+            </div>
+          ) : (
+            <div>
+              <p className="text-lg font-semibold text-gray-700">
+                Geo Lat: <span className="text-teal-600">{gpsLocation.geolat}</span>
+              </p>
+              <p className="text-lg font-semibold text-gray-700">
+                Geo Long: <span className="text-teal-600">{gpsLocation.geolong}</span>
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* Map Section */}
+        <div className={mainBoxStyleClass}>
+          <h2 className="text-xl font-bold mb-4 text-gray-800">Live Vehicle Location on Map</h2>
+          {MAPS_API_KEY === "AIzaSyCzEccIZNFiLG8VnIp-btN5IYXZkZkb7Kc" ? (
+            <div ref={mapRef} className="w-full" style={{ height: '400px' }} />
+          ) : (
+            // Removed the specific warning message here.
+            // You might want to remove this entire 'else' block if you don't want any message.
+            // Or add a more generic "Map not available" if the key is missing.
+            null 
+          )}
         </div>
       </div>
 
-      {/* Footer */}
-      <div className="mt-8 text-gray-500 text-sm text-center">
+      <div className="mt-8 text-gray-500 text-sm text-center pb-4">
         {mode === CONTROL_MODE.ARROWS ? (
           <p>Press and hold the on-screen arrow buttons to control direction and spray.</p>
         ) : (
           <p>Drag the joystick to control direction. Use the buttons below for spray.</p>
         )}
         <p>Click the "Cycle Speed" button to change speed.</p>
-        <p>Data is sent to Firebase Realtime Database.</p>
       </div>
     </div>
   );
