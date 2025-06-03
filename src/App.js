@@ -32,7 +32,7 @@ const CONTROL_MODE = {
 const BASE_CAMERA_STREAM_URL = "http://rccarcam.local:81/stream";
 const MOBILE_CAMERA_STREAM_URL = "http://rccarcam.local:81/stream";
 
-// Google Maps API Key
+// Google Maps API Key - Note: This key appears to be a placeholder or publicly exposed. Be cautious with API keys.
 const MAPS_API_KEY = "AIzaSyCzEccIZNFiLG8VnIp-btN5IYXZkZkb7Kc";
 
 function App() {
@@ -58,11 +58,11 @@ function App() {
   // Sensor Data States
   const [accelerometerData, setAccelerometerData] = useState({ x: 'N/A', y: 'N/A', z: 'N/A' });
   const [ultrasonicDistance, setUltrasonicDistance] = useState('N/A');
-  const [gpsLocation, setGpsLocation] = useState({ 
-    latitude: 'N/A', 
-    longitude: 'N/A', 
-    geolat: 'N/A', 
-    geolong: 'N/A' 
+  const [gpsLocation, setGpsLocation] = useState({
+    latitude: 'N/A',
+    longitude: 'N/A',
+    geolat: 'N/A',
+    geolong: 'N/A'
   });
   const [motionStatus, setMotionStatus] = useState('N/A');
   const [gpsSource, setGpsSource] = useState('NEO6');
@@ -76,12 +76,15 @@ function App() {
   const joystickRadius = 70;
   const deadZoneRadius = 20;
   const axisPriorityThreshold = 0.5;
+  // Determines if the user agent is a mobile device for conditional touch handling
   const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
 
   // Update Firebase with control data
   const updateFirebase = useCallback(async (dir, spd, sLeftActive, sRightActive) => {
-    if (!database) return;
-
+    if (!database) {
+      console.warn("Firebase Realtime DB not initialized for update.");
+      return;
+    }
     try {
       const dbRef = ref(database, "/");
       await update(dbRef, {
@@ -95,9 +98,14 @@ function App() {
         timestamp: new Date().toISOString(),
       });
     } catch (e) {
-      console.error("Error updating Firebase:", e);
+      console.error("Error updating Realtime Database: ", e);
     }
   }, []);
+
+  useEffect(() => {
+    updateFirebase(currentDirection, speed, sprayLeftActive, sprayRightActive);
+  }, [currentDirection, speed, sprayLeftActive, sprayRightActive, updateFirebase]);
+
 
   // Camera Stream Management
   useEffect(() => {
@@ -109,8 +117,8 @@ function App() {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 3000); // 3-second timeout
 
-        await fetch(timestampedUrl, { 
-          method: 'HEAD', 
+        await fetch(timestampedUrl, {
+          method: 'HEAD',
           mode: 'no-cors',
           signal: controller.signal // Abort signal
         });
@@ -185,7 +193,7 @@ function App() {
     });
 
     return () => off(rootDataRef, 'value', unsubscribeRootData);
-  }, []);
+  }, [database]);
 
   // Initialize Google Map
   useEffect(() => {
@@ -223,10 +231,10 @@ function App() {
     if (googleMap.current && googleMarker.current) {
       const currentLat = gpsSource === 'NEO6' ? gpsLocation.latitude : gpsLocation.geolat;
       const currentLng = gpsSource === 'NEO6' ? gpsLocation.longitude : gpsLocation.geolong;
-      
+
       const latNum = parseFloat(currentLat);
       const lngNum = parseFloat(currentLng);
-      
+
       if (!isNaN(latNum) && !isNaN(lngNum)) {
         const newLatLng = new window.google.maps.LatLng(latNum, lngNum);
         googleMarker.current.setPosition(newLatLng);
@@ -266,7 +274,8 @@ function App() {
 
   const handleJoystickMove = useCallback((clientX, clientY, event) => {
     if (!isDragging) return;
-    if (event?.cancelable) event.preventDefault();
+    // Only prevent default on mobile for smooth joystick dragging
+    if (isMobile && event?.cancelable) event.preventDefault();
 
     const container = joystickContainerRef.current;
     if (container) {
@@ -276,16 +285,16 @@ function App() {
       let newX = clientX - rect.left - centerX;
       let newY = clientY - rect.top - centerY;
       const distance = Math.sqrt(newX * newX + newY * newY);
-      
+
       if (distance > joystickRadius) {
         newX = (newX / distance) * joystickRadius;
         newY = (newY / distance) * joystickRadius;
       }
-      
+
       setJoystickPos({ x: newX, y: newY });
       setCurrentDirection(getDominantDirection(newX, newY));
     }
-  }, [isDragging, joystickRadius, getDominantDirection]);
+  }, [isDragging, joystickRadius, getDominantDirection, isMobile]); // Added isMobile to dependencies
 
   const handleJoystickEnd = useCallback(() => {
     setIsDragging(false);
@@ -306,6 +315,7 @@ function App() {
       if (isDragging) {
         window.addEventListener('mousemove', onMouseMove);
         window.addEventListener('mouseup', onMouseUp);
+        // Explicitly set passive: false for touchmove to allow preventDefault
         window.addEventListener('touchmove', onTouchMove, { passive: false });
         window.addEventListener('touchend', onTouchEnd);
       }
@@ -321,18 +331,26 @@ function App() {
 
   // Control Button Handlers
   const handleDirectionPress = useCallback((direction, event) => {
-    event?.preventDefault();
+    // Only prevent default on mobile touch events for buttons
+    if (isMobile && event?.cancelable) {
+      event.preventDefault();
+    }
     setCurrentDirection(direction);
-  }, []);
+  }, [isMobile]); // Added isMobile to dependencies
 
+  // --- NEWLY ADDED/FIXED FUNCTION ---
   const handleDirectionRelease = useCallback(() => {
     setCurrentDirection("CENTER");
   }, []);
+  // --- END OF NEWLY ADDED/FIXED FUNCTION ---
 
   const handleSprayPress = useCallback((sprayType, event) => {
-    event?.preventDefault();
+    // Only prevent default on mobile touch events for buttons
+    if (isMobile && event?.cancelable) {
+      event.preventDefault();
+    }
     sprayType === "left" ? setSprayLeftActive(true) : setSprayRightActive(true);
-  }, []);
+  }, [isMobile]); // Added isMobile to dependencies
 
   const handleSprayRelease = useCallback((sprayType) => {
     sprayType === "left" ? setSprayLeftActive(false) : setSprayRightActive(false);
@@ -365,13 +383,19 @@ function App() {
         </div>
       </header>
 
+      
+
       <div className="flex flex-col items-center justify-center pt-20 pb-4 w-full max-w-2xl mx-auto">
+
+        
         {/* Camera Stream Section */}
-        <div className="w-full bg-gray-800 rounded-lg shadow-lg mb-4 overflow-hidden flex flex-col items-center justify-center aspect-video">
+
+
+         <div className="w-full bg-white-800 rounded-lg shadow-lg mb-4 overflow-hidden flex flex-col items-center justify-center aspect-video">
           {videoStreamError && !lastGoodStreamUrl ? (
             // Only show full error if there's no last good frame to display
             <div className="p-4 bg-white border border-red-500 rounded-lg text-gray-800 w-full h-full flex flex-col justify-center items-center">
-              <p className="text-4xl">❌</p> 
+              <p className="text-4xl">❌</p>
               <p className="text-xl font-bold text-red-700 mt-2">CAMERA OFFLINE</p>
               <button
                 onClick={handleManualReconnect}
@@ -383,14 +407,13 @@ function App() {
           ) : (
             <iframe
               ref={iframeRef}
-              src={cctvStream} 
-              width="600"
-              height="450"
+              src={cctvStream}
               title="CCTV Camera"
               frameBorder="0"
               allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
               allowFullScreen
-              className="w-full h-full"
+              className="full"
+style={{ width: '50%', height: '25vh', margin: '0 auto', display: 'block' }}
               onError={() => {
                 // console.error("Iframe failed to load stream:", cctvStream); // Removed this log
                 setVideoStreamError(true);
@@ -402,22 +425,9 @@ function App() {
               }}
             ></iframe>
           )}
+        </div> 
 
-          {/* This overlay text is now completely removed */}
-          {/*
-          {videoStreamError && lastGoodStreamUrl && (
-            <div className="absolute inset-x-0 bottom-0 bg-black bg-opacity-75 text-white p-2 text-center text-sm">
-              <p>⚠️ **CAMERA OFFLINE:** Displaying last available frame.</p>
-              <button
-                onClick={handleManualReconnect}
-                className="mt-1 px-3 py-1 bg-red-600 text-white text-xs font-bold rounded-md hover:bg-red-700"
-              >
-                Reconnect
-              </button>
-            </div>
-          )}
-          */}
-        </div>
+        
 
         {/* Control Panel */}
         <div className={mainBoxStyleClass}>
@@ -434,9 +444,9 @@ function App() {
               </button>
               <button
                 onMouseDown={(e) => handleDirectionPress("UP", e)}
-                onMouseUp={handleDirectionRelease}
+                onMouseUp={() => handleDirectionRelease()}
                 onTouchStart={(e) => handleDirectionPress("UP", e)}
-                onTouchEnd={handleDirectionRelease}
+                onTouchEnd={() => handleDirectionRelease()}
                 className={buttonClass}
               >
                 ↑
@@ -453,9 +463,9 @@ function App() {
 
               <button
                 onMouseDown={(e) => handleDirectionPress("LEFTY", e)}
-                onMouseUp={handleDirectionRelease}
+                onMouseUp={() => handleDirectionRelease()}
                 onTouchStart={(e) => handleDirectionPress("LEFTY", e)}
-                onTouchEnd={handleDirectionRelease}
+                onTouchEnd={() => handleDirectionRelease()}
                 className={buttonClass}
               >
                 ←
@@ -463,9 +473,9 @@ function App() {
               <div className="w-20 h-20 flex items-center justify-center"></div>
               <button
                 onMouseDown={(e) => handleDirectionPress("RIGHTY", e)}
-                onMouseUp={handleDirectionRelease}
+                onMouseUp={() => handleDirectionRelease()}
                 onTouchStart={(e) => handleDirectionPress("RIGHTY", e)}
-                onTouchEnd={handleDirectionRelease}
+                onTouchEnd={() => handleDirectionRelease()}
                 className={buttonClass}
               >
                 →
@@ -474,9 +484,9 @@ function App() {
               <div className="col-start-2">
                 <button
                   onMouseDown={(e) => handleDirectionPress("DOWN", e)}
-                  onMouseUp={handleDirectionRelease}
+                  onMouseUp={() => handleDirectionRelease()}
                   onTouchStart={(e) => handleDirectionPress("DOWN", e)}
-                  onTouchEnd={handleDirectionRelease}
+                  onTouchEnd={() => handleDirectionRelease()}
                   className={buttonClass}
                 >
                   ↓
@@ -489,7 +499,15 @@ function App() {
                 ref={joystickContainerRef}
                 className="relative w-40 h-40 bg-gray-300 rounded-full shadow-lg flex items-center justify-center cursor-grab active:cursor-grabbing"
                 onMouseDown={(e) => handleJoystickStart(e.clientX, e.clientY)}
-                onTouchStart={(e) => { if (e.touches.length > 0) handleJoystickStart(e.touches[0].clientX, e.touches[0].clientY); }}
+                onTouchStart={(e) => {
+                  if (e.touches.length > 0) {
+                    // Prevent default on mobile touchstart for joystick to avoid scrolling
+                    if (isMobile && e.cancelable) {
+                      e.preventDefault();
+                    }
+                    handleJoystickStart(e.touches[0].clientX, e.touches[0].clientY);
+                  }
+                }}
               >
                 <div
                   ref={joystickKnobRef}
@@ -521,15 +539,15 @@ function App() {
           )}
 
           <div className="flex flex-col items-center space-y-4">
-            <button 
-              onClick={toggleSpeed} 
+            <button
+              onClick={toggleSpeed}
               className="px-6 py-3 bg-indigo-600 text-white font-bold rounded-lg shadow-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-opacity-75 transition-all duration-200 ease-in-out transform hover:scale-105"
             >
               Cycle Speed (Current: {speed})
             </button>
 
-            <button 
-              onClick={toggleControlMode} 
+            <button
+              onClick={toggleControlMode}
               className="px-6 py-3 bg-purple-600 text-white font-bold rounded-lg shadow-md hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-opacity-75 transition-all duration-200 ease-in-out transform hover:scale-105"
             >
               Switch to {mode === CONTROL_MODE.ARROWS ? "Joystick" : "Arrow Buttons"} Mode
@@ -613,10 +631,7 @@ function App() {
           {MAPS_API_KEY === "AIzaSyCzEccIZNFiLG8VnIp-btN5IYXZkZkb7Kc" ? (
             <div ref={mapRef} className="w-full" style={{ height: '400px' }} />
           ) : (
-            // Removed the specific warning message here.
-            // You might want to remove this entire 'else' block if you don't want any message.
-            // Or add a more generic "Map not available" if the key is missing.
-            null 
+            null
           )}
         </div>
       </div>
@@ -634,6 +649,3 @@ function App() {
 }
 
 export default App;
-
-
-//test
