@@ -79,34 +79,57 @@ function App() {
   // Determines if the user agent is a mobile device for conditional touch handling
   const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
 
-  // Update Firebase with control data
-  const updateFirebase = useCallback(async (dir, spd, sLeftActive, sRightActive) => {
-    if (!database) {
-      console.warn("Firebase Realtime DB not initialized for update.");
-      return;
+
+
+  
+ useEffect(() => {
+  if (!database) return;
+
+  const speedRef = ref(database, 'speed');
+  
+  // Fetch initial speed value
+  onValue(speedRef, (snapshot) => {
+    const value = snapshot.val();
+    if (value !== null && !isNaN(value)) {
+      setSpeed(parseInt(value, 10)); // Update local state
     }
-    try {
-      const dbRef = ref(database, "/");
-      await update(dbRef, {
-        up: dir === "UP" ? "1" : "0",
-        down: dir === "DOWN" ? "1" : "0",
-        left: dir === "LEFTY" ? "1" : "0",
-        right: dir === "RIGHTY" ? "1" : "0",
-        speed: String(spd),
-        spray_left: sLeftActive ? "1" : "0",
-        spray_right: sRightActive ? "1" : "0",
-        timestamp: new Date().toISOString(),
-      });
-    } catch (e) {
-      console.error("Error updating Realtime Database: ", e);
-    }
-  }, []);
+  });
+
+  return () => off(speedRef);
+}, [database]);
+  
+const updateFirebase = useCallback(async (dir, sLeftActive, sRightActive) => {
+  if (!database) {
+    console.warn("Firebase Realtime DB not initialized for update.");
+    return;
+  }
+
+  // Validate speed (ensure it's a number between 1 and 3)
+  // const validatedSpeed = typeof spd === 'number' && spd >= 1 && spd <= 3 ? spd : 1;
+
+  try {
+    const dbRef = ref(database, "/");
+    await update(dbRef, {
+      up: dir === "UP" ? "1" : "0",
+      down: dir === "DOWN" ? "1" : "0",
+      left: dir === "LEFTY" ? "1" : "0",
+      right: dir === "RIGHTY" ? "1" : "0",
+      // speed: String(validatedSpeed), // Use validated speed
+      spray_left: sLeftActive ? "1" : "0",
+      spray_right: sRightActive ? "1" : "0",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (e) {
+    console.error("Error updating Realtime Database: ", e);
+  }
+}, []);
 
   useEffect(() => {
     updateFirebase(currentDirection, speed, sprayLeftActive, sprayRightActive);
   }, [currentDirection, speed, sprayLeftActive, sprayRightActive, updateFirebase]);
 
 
+  
   // Camera Stream Management
   useEffect(() => {
     const streamSource = isMobile ? MOBILE_CAMERA_STREAM_URL : BASE_CAMERA_STREAM_URL;
@@ -356,7 +379,25 @@ function App() {
     sprayType === "left" ? setSprayLeftActive(false) : setSprayRightActive(false);
   }, []);
 
-  const toggleSpeed = () => setSpeed(prev => (prev % 3) + 1);
+  // const toggleSpeed = () => setSpeed(prev => (prev % 3) + 1);
+  const toggleSpeed = () => {
+  const newSpeed = (speed % 3) + 1;
+  setSpeed(newSpeed);
+
+  if (database) {
+    const updates = {
+      speed: String(newSpeed) // Must be wrapped in an object
+    };
+    
+    update(ref(database, "/"), updates).catch((e) => {
+      console.error("Failed to update speed:", e);
+    });
+  }
+};
+
+
+
+  
   const toggleControlMode = () => {
     setMode(prev => prev === CONTROL_MODE.ARROWS ? CONTROL_MODE.JOYSTICK : CONTROL_MODE.ARROWS);
     setCurrentDirection("CENTER");
