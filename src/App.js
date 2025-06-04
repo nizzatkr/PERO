@@ -51,8 +51,8 @@ function App() {
   const [mode, setMode] = useState(CONTROL_MODE.ARROWS);
   const [currentDirection, setCurrentDirection] = useState("CENTER");
   const [speed, setSpeed] = useState(1);
-  const [sprayLeftActive, setSprayLeftActive] = useState(false);
-  const [sprayRightActive, setSprayRightActive] = useState(false);
+  const [sprayLeftActive, setSprayLeftActive] = useState(false); // Initialized to boolean false
+  const [sprayRightActive, setSprayRightActive] = useState(false); // Initialized to boolean false
 
   // Camera Stream States
   const [videoStreamError, setVideoStreamError] = useState(false);
@@ -72,11 +72,12 @@ function App() {
   const [gpsLocation, setGpsLocation] = useState({
     latitude: 'N/A',
     longitude: 'N/A',
-    geolat: 'N/A',
-    geolong: 'N/A'
+    geolat: 'N/A', // For client-side geolocation
+    geolong: 'N/A' // For client-side geolocation
   });
   const [motionStatus, setMotionStatus] = useState('N/A');
-  const [gpsSource, setGpsSource] = useState('NEO6');
+  const [gpsSource, setGpsSource] = useState('NEO6'); // Default to NEO6
+  // Removed geolocationError state as we are no longer requesting client-side geolocation
 
   // Map Refs
   const mapRef = useRef(null);
@@ -145,14 +146,21 @@ function App() {
     const speedRef = ref(database, 'speed');
 
     // Fetch initial speed value
-    onValue(speedRef, (snapshot) => {
+    const unsubscribeSpeed = onValue(speedRef, (snapshot) => {
       const value = snapshot.val();
-      if (value !== null && !isNaN(value)) {
-        setSpeed(parseInt(value, 10)); // Update local state
+      const parsedValue = parseInt(value, 10); // Ensure it's always an integer
+
+      // Only update if the value is a valid number (1, 2, or 3)
+      if (!isNaN(parsedValue) && [1, 2, 3].includes(parsedValue)) {
+        setSpeed(parsedValue);
+      } else {
+        // If Firebase has an invalid speed, default to 1
+        console.warn(`Firebase 'speed' value is invalid or missing: ${value}. Defaulting to 1.`);
+        setSpeed(1);
       }
     });
 
-    return () => off(speedRef);
+    return () => off(speedRef, unsubscribeSpeed); // Cleanup subscription
   }, [database]);
 
   const updateFirebase = useCallback(async (dir, sLeftActive, sRightActive) => {
@@ -168,8 +176,8 @@ function App() {
         down: dir === "DOWN" ? "1" : "0",
         left: dir === "LEFTY" ? "1" : "0",
         right: dir === "RIGHTY" ? "1" : "0",
-        spray_left: sLeftActive ? "1" : "0",
-        spray_right: sRightActive ? "1" : "0",
+        // spray_left and spray_right are now updated directly by handleSprayPress/Release
+        // and read by the main data listener, so they are removed from here.
         timestamp: new Date().toISOString(),
       });
     } catch (e) {
@@ -194,7 +202,7 @@ function App() {
       return;
     }
 
-    const streamSource = isMobile ? MOBILE_CAMERA_STREAM_URL : BASE_CAMERA_STREAM_URL; // CORRECTED LINE
+    const streamSource = isMobile ? MOBILE_CAMERA_STREAM_URL : BASE_CAMERA_STREAM_URL;
 
     const testStreamConnection = async () => {
       const timestampedUrl = `${streamSource}?timestamp=${Date.now()}`;
@@ -247,12 +255,12 @@ function App() {
   const handleManualReconnect = useCallback(() => {
     if (!user) return; // Only reconnect if logged in
     setVideoStreamError(false); // Optimistically assume it will reconnect
-    const streamSource = isMobile ? MOBILE_CAMERA_STREAM_URL : BASE_CAMERA_STREAM_URL; // CORRECTED LINE
+    const streamSource = isMobile ? MOBILE_CAMERA_STREAM_URL : BASE_CAMERA_STREAM_URL;
     const timestampedUrl = `${streamSource}?timestamp=${Date.now()}`;
     setCctvStream(timestampedUrl); // Attempt to load the new stream
   }, [isMobile, user]); // Added user to dependencies
 
-  // Sensor Data Listener
+  // Sensor Data Listener - MODIFIED TO UNIFY GPS DATA READING
   useEffect(() => {
     // Only listen to sensor data if user is logged in
     if (!database || !user) {
@@ -261,6 +269,8 @@ function App() {
       setUltrasonicDistance('N/A');
       setMotionStatus('N/A');
       setGpsLocation({ latitude: 'N/A', longitude: 'N/A', geolat: 'N/A', geolong: 'N/A' });
+      setSprayLeftActive(false); // Reset spray status
+      setSprayRightActive(false); // Reset spray status
       return;
     }
 
@@ -275,17 +285,86 @@ function App() {
         });
         setUltrasonicDistance(data.distance_cm !== undefined ? data.distance_cm.toFixed(2) : 'N/A');
         setMotionStatus(data.motion !== undefined ? data.motion : 'N/A');
+
+        // Explicitly read all GPS fields from Firebase
         setGpsLocation({
           latitude: data.latitude !== undefined ? parseFloat(data.latitude).toFixed(6) : 'N/A',
           longitude: data.longitude !== undefined ? parseFloat(data.longitude).toFixed(6) : 'N/A',
           geolat: data.geolat !== undefined ? parseFloat(data.geolat).toFixed(6) : 'N/A',
           geolong: data.geolong !== undefined ? parseFloat(data.geolong).toFixed(6) : 'N/A'
         });
+        // Read spray status directly from Firebase
+        setSprayLeftActive(data.spray_left === "1");
+        setSprayRightActive(data.spray_right === "1");
       }
     });
 
     return () => off(rootDataRef, 'value', unsubscribeRootData);
   }, [database, user]); // Added user to dependencies
+
+  // Removed Geolocation Listener (for GEOLOCATION mode)
+  // This useEffect block is no longer needed as client-side geolocation is removed.
+  // useEffect(() => {
+  //   let watchId;
+  //   if (gpsSource === 'GEOLOCATION' && user && navigator.geolocation) {
+  //     setGeolocationError(null); // Clear previous errors
+  //
+  //     const successHandler = async (position) => {
+  //       const { latitude, longitude } = position.coords;
+  //
+  //       // Send client-side geolocation to Firebase
+  //       if (database && user) {
+  //         try {
+  //           await update(ref(database, "/"), {
+  //             geolat: String(latitude),
+  //             geolong: String(longitude),
+  //             geolocation_timestamp: new Date().toISOString()
+  //           });
+  //         } catch (e) {
+  //           console.error("Error updating client geolocation in Firebase:", e);
+  //         }
+  //       }
+  //     };
+  //
+  //     const errorHandler = (error) => {
+  //       console.error("Geolocation error:", error);
+  //       let errorMessage = "Geolocation unavailable.";
+  //       switch (error.code) {
+  //         case error.PERMISSION_DENIED:
+  //           errorMessage = "Geolocation permission denied. Please enable location services for this site.";
+  //           break;
+  //         case error.POSITION_UNAVAILABLE:
+  //           errorMessage = "Location information is unavailable.";
+  //           break;
+  //         case error.TIMEOUT:
+  //           errorMessage = "The request to get user location timed out.";
+  //           break;
+  //         default:
+  //           errorMessage = "An unknown geolocation error occurred.";
+  //           break;
+  //       }
+  //       setGeolocationError(errorMessage);
+  //     };
+  //
+  //     watchId = navigator.geolocation.watchPosition(
+  //       successHandler,
+  //       errorHandler,
+  //       {
+  //         enableHighAccuracy: true,
+  //         timeout: 5000,
+  //         maximumAge: 0
+  //       }
+  //     );
+  //   } else {
+  //     setGeolocationError(null);
+  //   }
+  //
+  //   return () => {
+  //     if (watchId) {
+  //       navigator.geolocation.clearWatch(watchId);
+  //     }
+  //   };
+  // }, [gpsSource, user, database]);
 
   // Initialize Google Map
   useEffect(() => {
@@ -439,6 +518,7 @@ function App() {
 
   // Control Button Handlers
   const handleDirectionPress = useCallback((direction, event) => {
+    if (event) event.stopPropagation(); // Stop event propagation unconditionally
     if (!user) return; // Only allow control if logged in
     // Only prevent default on mobile touch events for buttons
     if (isMobile && event?.cancelable) {
@@ -452,34 +532,77 @@ function App() {
     setCurrentDirection("CENTER");
   }, [user]); // Added user to dependencies
 
-  const handleSprayPress = useCallback((sprayType, event) => {
+  const handleSprayPress = useCallback(async (sprayType, event) => {
+    if (event) event.stopPropagation(); // Stop event propagation unconditionally
     if (!user) return; // Only allow spray if logged in
     // Only prevent default on mobile touch events for buttons
     if (isMobile && event?.cancelable) {
       event.preventDefault();
     }
-    sprayType === "left" ? setSprayLeftActive(true) : setSprayRightActive(true);
-  }, [isMobile, user]); // Added user to dependencies
 
-  const handleSprayRelease = useCallback((sprayType) => {
-    if (!user) return; // Only allow spray if logged in
-    sprayType === "left" ? setSprayLeftActive(false) : setSprayRightActive(false);
-  }, [user]); // Added user to dependencies
-
-  const toggleSpeed = () => {
-    if (!user) return; // Only allow speed change if logged in
-    const newSpeed = (speed % 3) + 1;
-    setSpeed(newSpeed);
-
-    if (database) {
-      const updates = {
-        speed: String(newSpeed) // Must be wrapped in an object
-      };
-
-      update(ref(database, "/"), updates).catch((e) => {
-        console.error("Failed to update speed:", e);
-      });
+    const updates = {};
+    if (sprayType === "left") {
+      updates.spray_left = "1";
+    } else {
+      updates.spray_right = "1";
     }
+    try {
+      await update(ref(database, "/"), updates);
+    } catch (e) {
+      console.error("Error updating spray status:", e);
+    }
+  }, [isMobile, user, database]); // Added database to dependencies
+
+  const handleSprayRelease = useCallback(async (sprayType) => {
+    if (!user) return; // Only allow spray if logged in
+
+    const updates = {};
+    if (sprayType === "left") {
+      updates.spray_left = "0";
+    } else {
+      updates.spray_right = "0";
+    }
+    try {
+      await update(ref(database, "/"), updates);
+    } catch (e) {
+      console.error("Error updating spray status:", e);
+    }
+  }, [user, database]); // Added database to dependencies
+
+  const toggleSpeed = (e) => { // Accept event object
+    if (e) e.stopPropagation(); // Stop event propagation (good practice, but not primary fix here)
+    if (!user) return; // Only allow speed change if logged in
+
+    setSpeed(prevSpeed => { // Use functional update to ensure latest speed value
+      // Ensure prevSpeed is a number and within expected range
+      const currentNumericSpeed = typeof prevSpeed === 'number' ? prevSpeed : parseInt(prevSpeed, 10);
+      let calculatedNewSpeed;
+
+      if (currentNumericSpeed === 1) {
+        calculatedNewSpeed = 2;
+      } else if (currentNumericSpeed === 2) {
+        calculatedNewSpeed = 3;
+      } else if (currentNumericSpeed === 3) {
+        calculatedNewSpeed = 1;
+      } else {
+        // Fallback for unexpected speed values, default to 1
+        console.warn("Unexpected speed value encountered:", prevSpeed, "Defaulting to 1.");
+        calculatedNewSpeed = 1;
+      }
+
+      console.log(`Speed cycle: From ${currentNumericSpeed} to ${calculatedNewSpeed}`);
+
+      if (database) {
+        const updates = {
+          speed: String(calculatedNewSpeed) // Must be wrapped in an object
+        };
+
+        update(ref(database, "/"), updates).catch((error) => {
+          console.error("Failed to update speed in Firebase:", error);
+        });
+      }
+      return calculatedNewSpeed; // Return the new speed for the state update
+    });
   };
 
   const toggleControlMode = () => {
@@ -811,6 +934,7 @@ function App() {
               </p>
             </div>
           )}
+          {/* Removed geolocationError display */}
         </div>
 
         {/* Map Section */}
