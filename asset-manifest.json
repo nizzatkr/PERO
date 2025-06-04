@@ -1,15 +1,15 @@
 {
   "files": {
-    "main.css": "/PERO/static/css/main.2995106f.css",
-    "main.js": "/PERO/static/js/main.6a7befe1.js",
+    "main.css": "/PERO/static/css/main.19b33dbd.css",
+    "main.js": "/PERO/static/js/main.c571bf78.js",
     "static/js/453.94da4cb8.chunk.js": "/PERO/static/js/453.94da4cb8.chunk.js",
     "index.html": "/PERO/index.html",
-    "main.2995106f.css.map": "/PERO/static/css/main.2995106f.css.map",
-    "main.6a7befe1.js.map": "/PERO/static/js/main.6a7befe1.js.map",
+    "main.19b33dbd.css.map": "/PERO/static/css/main.19b33dbd.css.map",
+    "main.c571bf78.js.map": "/PERO/static/js/main.c571bf78.js.map",
     "453.94da4cb8.chunk.js.map": "/PERO/static/js/453.94da4cb8.chunk.js.map"
   },
   "entrypoints": [
-    "static/css/main.2995106f.css",
-    "static/js/main.6a7befe1.js"
+    "static/css/main.19b33dbd.css",
+    "static/js/main.c571bf78.js"
   ]
 }
