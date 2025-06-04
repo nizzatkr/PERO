@@ -50,7 +50,8 @@ function App() {
   // Control States
   const [mode, setMode] = useState(CONTROL_MODE.ARROWS);
   const [currentDirection, setCurrentDirection] = useState("CENTER");
-  const [speed, setSpeed] = useState(1);
+  const [speed, setSpeed] = useState(1); // Speed state is still here, but not used for PWM control
+  const [pwmValue, setPwmValue] = useState(170); // New state for PWM slider, initialized to 170
   const [sprayLeftActive, setSprayLeftActive] = useState(false); // Initialized to boolean false
   const [sprayRightActive, setSprayRightActive] = useState(false); // Initialized to boolean false
 
@@ -77,14 +78,13 @@ function App() {
   });
   const [motionStatus, setMotionStatus] = useState('N/A');
   const [gpsSource, setGpsSource] = useState('NEO6'); // Default to NEO6
-  // Removed geolocationError state as we are no longer requesting client-side geolocation
 
   // Map Refs
   const mapRef = useRef(null);
   const googleMap = useRef(null);
   const googleMarker = useRef(null);
 
-  // Constants
+  // Constants - Reverted to original sizes for joystick/arrows
   const joystickRadius = 70;
   const deadZoneRadius = 20;
   const axisPriorityThreshold = 0.5;
@@ -140,30 +140,7 @@ function App() {
   };
   // --- END AUTHENTICATION LOGIC ---
 
-  useEffect(() => {
-    if (!database) return;
-
-    const speedRef = ref(database, 'speed');
-
-    // Fetch initial speed value
-    const unsubscribeSpeed = onValue(speedRef, (snapshot) => {
-      const value = snapshot.val();
-      const parsedValue = parseInt(value, 10); // Ensure it's always an integer
-
-      // Only update if the value is a valid number (1, 2, or 3)
-      if (!isNaN(parsedValue) && [1, 2, 3].includes(parsedValue)) {
-        setSpeed(parsedValue);
-      } else {
-        // If Firebase has an invalid speed, default to 1
-        console.warn(`Firebase 'speed' value is invalid or missing: ${value}. Defaulting to 1.`);
-        setSpeed(1);
-      }
-    });
-
-    return () => off(speedRef, unsubscribeSpeed); // Cleanup subscription
-  }, [database]);
-
-  const updateFirebase = useCallback(async (dir, sLeftActive, sRightActive) => {
+  const updateFirebase = useCallback(async (dir) => {
     if (!database) {
       console.warn("Firebase Realtime DB not initialized for update.");
       return;
@@ -176,8 +153,6 @@ function App() {
         down: dir === "DOWN" ? "1" : "0",
         left: dir === "LEFTY" ? "1" : "0",
         right: dir === "RIGHTY" ? "1" : "0",
-        // spray_left and spray_right are now updated directly by handleSprayPress/Release
-        // and read by the main data listener, so they are removed from here.
         timestamp: new Date().toISOString(),
       });
     } catch (e) {
@@ -186,18 +161,16 @@ function App() {
   }, []);
 
   useEffect(() => {
-    // Only send commands to Firebase if a user is logged in
     if (user) {
-      updateFirebase(currentDirection, sprayLeftActive, sprayRightActive);
+      updateFirebase(currentDirection);
     }
-  }, [currentDirection, sprayLeftActive, sprayRightActive, updateFirebase, user]); // Added user to dependencies
+  }, [currentDirection, updateFirebase, user]);
 
   // Camera Stream Management
   useEffect(() => {
-    // Only attempt camera stream connection if user is logged in
     if (!user) {
-      setCctvStream(""); // Clear stream if not logged in
-      setVideoStreamError(false); // Reset error state
+      setCctvStream("");
+      setVideoStreamError(false);
       setLastGoodStreamUrl("");
       return;
     }
@@ -208,35 +181,31 @@ function App() {
       const timestampedUrl = `${streamSource}?timestamp=${Date.now()}`;
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3000); // 3-second timeout
+        const timeoutId = setTimeout(() => controller.abort(), 3000);
 
         await fetch(timestampedUrl, {
           method: 'HEAD',
           mode: 'no-cors',
-          signal: controller.signal // Abort signal
+          signal: controller.signal
         });
         clearTimeout(timeoutId);
 
         setVideoStreamError(false);
         setCctvStream(timestampedUrl);
-        setLastGoodStreamUrl(timestampedUrl); // Update last good URL
+        setLastGoodStreamUrl(timestampedUrl);
       } catch (error) {
         setVideoStreamError(true);
         if (lastGoodStreamUrl) {
-          setCctvStream(lastGoodStreamUrl); // Keep showing last good frame
+          setCctvStream(lastGoodStreamUrl);
         } else {
-          setCctvStream(""); // Ensure no broken iframe is loaded if no good URL ever existed
+          setCctvStream("");
         }
       }
     };
 
-    // Initial load
     testStreamConnection();
-
-    // Set up periodic refresh
     const refreshInterval = setInterval(testStreamConnection, 5000);
 
-    // Handle visibility changes
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         testStreamConnection();
@@ -249,28 +218,26 @@ function App() {
       clearInterval(refreshInterval);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [isMobile, lastGoodStreamUrl, user]); // Added user to dependencies
+  }, [isMobile, lastGoodStreamUrl, user]);
 
-  // Manual camera reconnect
   const handleManualReconnect = useCallback(() => {
-    if (!user) return; // Only reconnect if logged in
-    setVideoStreamError(false); // Optimistically assume it will reconnect
+    if (!user) return;
+    setVideoStreamError(false);
     const streamSource = isMobile ? MOBILE_CAMERA_STREAM_URL : BASE_CAMERA_STREAM_URL;
     const timestampedUrl = `${streamSource}?timestamp=${Date.now()}`;
-    setCctvStream(timestampedUrl); // Attempt to load the new stream
-  }, [isMobile, user]); // Added user to dependencies
+    setCctvStream(timestampedUrl);
+  }, [isMobile, user]);
 
-  // Sensor Data Listener - MODIFIED TO UNIFY GPS DATA READING
+  // Sensor Data Listener - Unified GPS Data Reading and PWM
   useEffect(() => {
-    // Only listen to sensor data if user is logged in
     if (!database || !user) {
-      // Clear sensor data if not logged in
       setAccelerometerData({ x: 'N/A', y: 'N/A', z: 'N/A' });
       setUltrasonicDistance('N/A');
       setMotionStatus('N/A');
       setGpsLocation({ latitude: 'N/A', longitude: 'N/A', geolat: 'N/A', geolong: 'N/A' });
-      setSprayLeftActive(false); // Reset spray status
-      setSprayRightActive(false); // Reset spray status
+      setPwmValue(170);
+      setSprayLeftActive(false);
+      setSprayRightActive(false);
       return;
     }
 
@@ -286,89 +253,30 @@ function App() {
         setUltrasonicDistance(data.distance_cm !== undefined ? data.distance_cm.toFixed(2) : 'N/A');
         setMotionStatus(data.motion !== undefined ? data.motion : 'N/A');
 
-        // Explicitly read all GPS fields from Firebase
         setGpsLocation({
           latitude: data.latitude !== undefined ? parseFloat(data.latitude).toFixed(6) : 'N/A',
           longitude: data.longitude !== undefined ? parseFloat(data.longitude).toFixed(6) : 'N/A',
           geolat: data.geolat !== undefined ? parseFloat(data.geolat).toFixed(6) : 'N/A',
           geolong: data.geolong !== undefined ? parseFloat(data.geolong).toFixed(6) : 'N/A'
         });
-        // Read spray status directly from Firebase
+
+        const firebasePwm = parseInt(data.pwm, 10);
+        if (!isNaN(firebasePwm)) {
+          setPwmValue(firebasePwm);
+        } else {
+          setPwmValue(170);
+        }
+
         setSprayLeftActive(data.spray_left === "1");
         setSprayRightActive(data.spray_right === "1");
       }
     });
 
     return () => off(rootDataRef, 'value', unsubscribeRootData);
-  }, [database, user]); // Added user to dependencies
-
-  // Removed Geolocation Listener (for GEOLOCATION mode)
-  // This useEffect block is no longer needed as client-side geolocation is removed.
-  // useEffect(() => {
-  //   let watchId;
-  //   if (gpsSource === 'GEOLOCATION' && user && navigator.geolocation) {
-  //     setGeolocationError(null); // Clear previous errors
-  //
-  //     const successHandler = async (position) => {
-  //       const { latitude, longitude } = position.coords;
-  //
-  //       // Send client-side geolocation to Firebase
-  //       if (database && user) {
-  //         try {
-  //           await update(ref(database, "/"), {
-  //             geolat: String(latitude),
-  //             geolong: String(longitude),
-  //             geolocation_timestamp: new Date().toISOString()
-  //           });
-  //         } catch (e) {
-  //           console.error("Error updating client geolocation in Firebase:", e);
-  //         }
-  //       }
-  //     };
-  //
-  //     const errorHandler = (error) => {
-  //       console.error("Geolocation error:", error);
-  //       let errorMessage = "Geolocation unavailable.";
-  //       switch (error.code) {
-  //         case error.PERMISSION_DENIED:
-  //           errorMessage = "Geolocation permission denied. Please enable location services for this site.";
-  //           break;
-  //         case error.POSITION_UNAVAILABLE:
-  //           errorMessage = "Location information is unavailable.";
-  //           break;
-  //         case error.TIMEOUT:
-  //           errorMessage = "The request to get user location timed out.";
-  //           break;
-  //         default:
-  //           errorMessage = "An unknown geolocation error occurred.";
-  //           break;
-  //       }
-  //       setGeolocationError(errorMessage);
-  //     };
-  //
-  //     watchId = navigator.geolocation.watchPosition(
-  //       successHandler,
-  //       errorHandler,
-  //       {
-  //         enableHighAccuracy: true,
-  //         timeout: 5000,
-  //         maximumAge: 0
-  //       }
-  //     );
-  //   } else {
-  //     setGeolocationError(null);
-  //   }
-  //
-  //   return () => {
-  //     if (watchId) {
-  //       navigator.geolocation.clearWatch(watchId);
-  //     }
-  //   };
-  // }, [gpsSource, user, database]);
+  }, [database, user]);
 
   // Initialize Google Map
   useEffect(() => {
-    // Only initialize map if user is logged in
     if (!user) {
         if (googleMap.current) {
             googleMap.current = null;
@@ -408,11 +316,10 @@ function App() {
       window.initMap = initMap;
       document.head.appendChild(script);
     }
-  }, [user]); // Added user to dependencies
+  }, [user]);
 
   // Update Map Marker
   useEffect(() => {
-    // Only update map marker if user is logged in
     if (!user || !googleMap.current || !googleMarker.current) return;
 
     const currentLat = gpsSource === 'NEO6' ? gpsLocation.latitude : gpsLocation.geolat;
@@ -426,7 +333,7 @@ function App() {
       googleMarker.current.setPosition(newLatLng);
       googleMap.current.setCenter(newLatLng);
     }
-  }, [gpsLocation, gpsSource, user]); // Added user to dependencies
+  }, [gpsLocation, gpsSource, user]);
 
   // Joystick Control Functions
   const getDominantDirection = useCallback((x, y) => {
@@ -446,7 +353,7 @@ function App() {
   }, [joystickRadius, deadZoneRadius, axisPriorityThreshold]);
 
   const handleJoystickStart = useCallback((clientX, clientY) => {
-    if (!user) return; // Only allow joystick control if logged in
+    if (!user) return;
     setIsDragging(true);
     const container = joystickContainerRef.current;
     if (container) {
@@ -456,11 +363,10 @@ function App() {
       setJoystickPos({ x: newX, y: newY });
       setCurrentDirection(getDominantDirection(newX, newY));
     }
-  }, [getDominantDirection, user]); // Added user to dependencies
+  }, [getDominantDirection, user]);
 
   const handleJoystickMove = useCallback((clientX, clientY, event) => {
-    if (!isDragging || !user) return; // Only allow joystick control if logged in
-    // Only prevent default on mobile for smooth joystick dragging
+    if (!isDragging || !user) return;
     if (isMobile && event?.cancelable) event.preventDefault();
 
     const container = joystickContainerRef.current;
@@ -480,18 +386,18 @@ function App() {
       setJoystickPos({ x: newX, y: newY });
       setCurrentDirection(getDominantDirection(newX, newY));
     }
-  }, [isDragging, joystickRadius, getDominantDirection, isMobile, user]); // Added user to dependencies
+  }, [isDragging, joystickRadius, getDominantDirection, isMobile, user]);
 
   const handleJoystickEnd = useCallback(() => {
-    if (!user) return; // Only allow joystick control if logged in
+    if (!user) return;
     setIsDragging(false);
     setJoystickPos({ x: 0, y: 0 });
     setCurrentDirection("CENTER");
-  }, [user]); // Added user to dependencies
+  }, [user]);
 
   // Joystick Event Listeners
   useEffect(() => {
-    if (mode === CONTROL_MODE.JOYSTICK && user) { // Only attach listeners if in joystick mode AND logged in
+    if (mode === CONTROL_MODE.JOYSTICK && user) {
       const onMouseMove = (e) => handleJoystickMove(e.clientX, e.clientY, e);
       const onMouseUp = handleJoystickEnd;
       const onTouchMove = (e) => {
@@ -502,7 +408,6 @@ function App() {
       if (isDragging) {
         window.addEventListener('mousemove', onMouseMove);
         window.addEventListener('mouseup', onMouseUp);
-        // Explicitly set passive: false for touchmove to allow preventDefault
         window.addEventListener('touchmove', onTouchMove, { passive: false });
         window.addEventListener('touchend', onTouchEnd);
       }
@@ -514,28 +419,26 @@ function App() {
         window.removeEventListener('touchend', onTouchEnd);
       };
     }
-  }, [isDragging, handleJoystickMove, handleJoystickEnd, mode, user]); // Added user to dependencies
+  }, [isDragging, handleJoystickMove, handleJoystickEnd, mode, user]);
 
   // Control Button Handlers
   const handleDirectionPress = useCallback((direction, event) => {
-    if (event) event.stopPropagation(); // Stop event propagation unconditionally
-    if (!user) return; // Only allow control if logged in
-    // Only prevent default on mobile touch events for buttons
+    if (event) event.stopPropagation();
+    if (!user) return;
     if (isMobile && event?.cancelable) {
       event.preventDefault();
     }
     setCurrentDirection(direction);
-  }, [isMobile, user]); // Added user to dependencies
+  }, [isMobile, user]);
 
   const handleDirectionRelease = useCallback(() => {
-    if (!user) return; // Only allow control if logged in
+    if (!user) return;
     setCurrentDirection("CENTER");
-  }, [user]); // Added user to dependencies
+  }, [user]);
 
   const handleSprayPress = useCallback(async (sprayType, event) => {
-    if (event) event.stopPropagation(); // Stop event propagation unconditionally
-    if (!user) return; // Only allow spray if logged in
-    // Only prevent default on mobile touch events for buttons
+    if (event) event.stopPropagation();
+    if (!user) return;
     if (isMobile && event?.cancelable) {
       event.preventDefault();
     }
@@ -551,10 +454,10 @@ function App() {
     } catch (e) {
       console.error("Error updating spray status:", e);
     }
-  }, [isMobile, user, database]); // Added database to dependencies
+  }, [isMobile, user, database]);
 
   const handleSprayRelease = useCallback(async (sprayType) => {
-    if (!user) return; // Only allow spray if logged in
+    if (!user) return;
 
     const updates = {};
     if (sprayType === "left") {
@@ -567,46 +470,24 @@ function App() {
     } catch (e) {
       console.error("Error updating spray status:", e);
     }
-  }, [user, database]); // Added database to dependencies
+  }, [user, database]);
 
-  const toggleSpeed = (e) => { // Accept event object
-    if (e) e.stopPropagation(); // Stop event propagation (good practice, but not primary fix here)
-    if (!user) return; // Only allow speed change if logged in
+  const handlePwmChange = useCallback(async (event) => {
+    if (!user) return;
+    const newPwm = parseInt(event.target.value, 10);
+    setPwmValue(newPwm);
 
-    setSpeed(prevSpeed => { // Use functional update to ensure latest speed value
-      // Ensure prevSpeed is a number and within expected range
-      const currentNumericSpeed = typeof prevSpeed === 'number' ? prevSpeed : parseInt(prevSpeed, 10);
-      let calculatedNewSpeed;
-
-      if (currentNumericSpeed === 1) {
-        calculatedNewSpeed = 2;
-      } else if (currentNumericSpeed === 2) {
-        calculatedNewSpeed = 3;
-      } else if (currentNumericSpeed === 3) {
-        calculatedNewSpeed = 1;
-      } else {
-        // Fallback for unexpected speed values, default to 1
-        console.warn("Unexpected speed value encountered:", prevSpeed, "Defaulting to 1.");
-        calculatedNewSpeed = 1;
+    if (database) {
+      try {
+        await update(ref(database, "/"), { pwm: String(newPwm) });
+      } catch (error) {
+        console.error("Failed to update PWM in Firebase:", error);
       }
-
-      console.log(`Speed cycle: From ${currentNumericSpeed} to ${calculatedNewSpeed}`);
-
-      if (database) {
-        const updates = {
-          speed: String(calculatedNewSpeed) // Must be wrapped in an object
-        };
-
-        update(ref(database, "/"), updates).catch((error) => {
-          console.error("Failed to update speed in Firebase:", error);
-        });
-      }
-      return calculatedNewSpeed; // Return the new speed for the state update
-    });
-  };
+    }
+  }, [user, database]);
 
   const toggleControlMode = () => {
-    if (!user) return; // Only allow mode toggle if logged in
+    if (!user) return;
     setMode(prev => prev === CONTROL_MODE.ARROWS ? CONTROL_MODE.JOYSTICK : CONTROL_MODE.ARROWS);
     setCurrentDirection("CENTER");
     setSprayLeftActive(false);
@@ -622,7 +503,8 @@ function App() {
     "hover:bg-green-600 active:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-75 " +
     "transition-all duration-150 ease-in-out transform active:scale-95 select-none";
 
-  const mainBoxStyleClass = "mt-4 p-6 bg-white rounded-lg shadow-xl w-full max-w-2xl text-center";
+  // Reduced margin-top for main boxes
+  const mainBoxStyleClass = "mt-2 p-6 bg-white rounded-lg shadow-xl w-full max-w-2xl text-center";
 
   // --- CONDITIONAL RENDERING: LOGIN PAGE vs. MAIN APP ---
   if (loadingAuth) {
@@ -704,10 +586,10 @@ function App() {
         </div>
       </header>
 
-      <div className="flex flex-col items-center justify-center pt-20 pb-4 w-full max-w-2xl mx-auto">
+      <div className="flex flex-col items-center justify-center pt-10 pb-4 w-full max-w-2xl mx-auto">
 
         {/* Camera Stream Section */}
-        <div className="w-full bg-white-800 rounded-lg shadow-lg mb-4 overflow-hidden flex flex-col items-center justify-center aspect-video">
+        <div className="w-full bg-white-800 rounded-lg shadow-lg mb-2 overflow-hidden flex flex-col items-center justify-center aspect-video">
           {videoStreamError && !lastGoodStreamUrl ? (
             <div className="p-4 bg-white border border-red-500 rounded-lg text-gray-800 w-full h-full flex flex-col justify-center items-center">
               <p className="text-4xl">❌</p>
@@ -850,12 +732,22 @@ function App() {
           )}
 
           <div className="flex flex-col items-center space-y-4">
-            <button
-              onClick={toggleSpeed}
-              className="px-6 py-3 bg-indigo-600 text-white font-bold rounded-lg shadow-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-opacity-75 transition-all duration-200 ease-in-out transform hover:scale-105"
-            >
-              Cycle Speed (Current: {speed})
-            </button>
+            {/* PWM Slider */}
+            <div className="w-full max-w-sm flex flex-col items-center space-y-2">
+              <label htmlFor="pwm-slider" className="text-xl font-bold text-gray-700">
+                PWM Control: <span className="text-indigo-600">{pwmValue}</span>
+              </label>
+              <input
+                type="range"
+                id="pwm-slider"
+                min="0"
+                max="255"
+                step="1"
+                value={pwmValue}
+                onChange={handlePwmChange}
+                className="w-full h-4 bg-gray-200 rounded-lg appearance-none cursor-pointer range-lg accent-indigo-600"
+              />
+            </div>
 
             <button
               onClick={toggleControlMode}
@@ -867,9 +759,6 @@ function App() {
             <div className="text-center mt-4">
               <p className="text-2xl font-semibold text-gray-700">
                 Direction: <span className="text-blue-600">{currentDirection}</span>
-              </p>
-              <p className="text-2xl font-semibold text-gray-700">
-                Speed: <span className="text-green-600">{speed}</span>
               </p>
               <p className="text-lg font-semibold text-gray-700">
                 Spray Left: <span className={sprayLeftActive ? "text-red-500" : "text-gray-400"}>{sprayLeftActive ? "ON" : "OFF"}</span>
@@ -934,7 +823,6 @@ function App() {
               </p>
             </div>
           )}
-          {/* Removed geolocationError display */}
         </div>
 
         {/* Map Section */}
@@ -954,7 +842,7 @@ function App() {
         ) : (
           <p>Drag the joystick to control direction. Use the buttons below for spray.</p>
         )}
-        <p>Click the "Cycle Speed" button to change speed.</p>
+        <p>Adjust the slider to control PWM (speed).</p>
       </div>
     </div>
   );
