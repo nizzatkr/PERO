@@ -89,7 +89,7 @@ function App() {
   const deadZoneRadius = 20;
   const axisPriorityThreshold = 0.5;
   // Determines if the user agent is a mobile device for conditional touch handling
-  const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+  const isMobile = /Android|webOS|iPhone|iPad|IPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
 
   // --- AUTHENTICATION LOGIC ---
   useEffect(() => {
@@ -267,6 +267,7 @@ function App() {
           setPwmValue(170);
         }
 
+        // IMPORTANT: These states are now directly driven by Firebase values
         setSprayLeftActive(data.spray_left === "1");
         setSprayRightActive(data.spray_right === "1");
       }
@@ -436,39 +437,17 @@ function App() {
     setCurrentDirection("CENTER");
   }, [user]);
 
-  const handleSprayPress = useCallback(async (sprayType, event) => {
-    if (event) event.stopPropagation();
-    if (!user) return;
-    if (isMobile && event?.cancelable) {
-      event.preventDefault();
-    }
-
-    const updates = {};
-    if (sprayType === "left") {
-      updates.spray_left = "1";
-    } else {
-      updates.spray_right = "1";
-    }
-    try {
-      await update(ref(database, "/"), updates);
-    } catch (e) {
-      console.error("Error updating spray status:", e);
-    }
-  }, [isMobile, user, database]);
-
-  const handleSprayRelease = useCallback(async (sprayType) => {
+  // Function for spray buttons - now only sends "1" to Firebase
+  const handleSprayClick = useCallback(async (sprayType) => {
     if (!user) return;
 
-    const updates = {};
-    if (sprayType === "left") {
-      updates.spray_left = "0";
-    } else {
-      updates.spray_right = "0";
-    }
+    const sprayKey = sprayType === "left" ? "spray_left" : "spray_right";
+
     try {
-      await update(ref(database, "/"), updates);
+      await update(ref(database, "/"), { [sprayKey]: "1" });
+      // The visual state (sprayLeftActive/sprayRightActive) will be updated by the Firebase listener
     } catch (e) {
-      console.error("Error updating spray status:", e);
+      console.error(`Error turning spray ${sprayType.toUpperCase()} ON in Firebase:`, e);
     }
   }, [user, database]);
 
@@ -490,20 +469,29 @@ function App() {
     if (!user) return;
     setMode(prev => prev === CONTROL_MODE.ARROWS ? CONTROL_MODE.JOYSTICK : CONTROL_MODE.ARROWS);
     setCurrentDirection("CENTER");
-    setSprayLeftActive(false);
-    setSprayRightActive(false);
+    // No need to reset spray states here, as they are Firebase-driven
   };
 
-  // Button Styles (kept separate for readability)
+  // Button Styles
   const buttonClass = "w-20 h-20 bg-blue-500 text-white text-base font-bold rounded-lg shadow-md flex items-center justify-center " +
     "hover:bg-blue-600 active:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-75 " +
     "transition-all duration-150 ease-in-out transform active:scale-95 select-none";
 
-  const sprayButtonJoystickClass = "w-24 h-16 bg-green-500 text-white text-xl font-bold rounded-lg shadow-md flex items-center justify-center " +
-    "hover:bg-green-600 active:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-75 " +
+  // Common part for spray buttons (colors will be applied conditionally)
+  const sprayButtonBaseClasses = "text-white font-bold rounded-lg shadow-md flex items-center justify-center " +
     "transition-all duration-150 ease-in-out transform active:scale-95 select-none";
 
-  // Reduced margin-top for main boxes
+  // Specific size for spray buttons in ARROWS mode (match arrow buttons)
+  const sprayButtonArrowModeSize = "w-20 h-20 text-base";
+
+  // Specific size for spray buttons in JOYSTICK mode (larger)
+  const sprayButtonJoystickModeSize = "w-24 h-16 text-xl";
+
+  // Colors and hover/active for spray buttons when active (green)
+  const sprayActiveColorClasses = "bg-lime-500 hover:bg-lime-600 active:bg-lime-700 focus:ring-lime-500";
+  // Colors and hover/active for spray buttons when inactive (blue)
+  const sprayInactiveColorClasses = "bg-blue-500 hover:bg-blue-600 active:bg-blue-700 focus:ring-blue-500";
+
   const mainBoxStyleClass = "mt-2 p-6 bg-white rounded-lg shadow-xl w-full max-w-2xl text-center";
 
   // --- CONDITIONAL RENDERING: LOGIN PAGE vs. MAIN APP ---
@@ -628,11 +616,8 @@ function App() {
           {mode === CONTROL_MODE.ARROWS ? (
             <div className="grid grid-cols-3 gap-2 p-4 bg-gray-200 rounded-lg w-fit mx-auto mb-4">
               <button
-                onMouseDown={(e) => handleSprayPress("left", e)}
-                onMouseUp={() => handleSprayRelease("left")}
-                onTouchStart={(e) => handleSprayPress("left", e)}
-                onTouchEnd={() => handleSprayRelease("left")}
-                className={buttonClass}
+                onClick={() => handleSprayClick("left")}
+                className={`${sprayButtonBaseClasses} ${sprayButtonArrowModeSize} ${sprayLeftActive ? sprayActiveColorClasses : sprayInactiveColorClasses}`}
               >
                 Spray Left
               </button>
@@ -646,11 +631,8 @@ function App() {
                 ↑
               </button>
               <button
-                onMouseDown={(e) => handleSprayPress("right", e)}
-                onMouseUp={() => handleSprayRelease("right")}
-                onTouchStart={(e) => handleSprayPress("right", e)}
-                onTouchEnd={() => handleSprayRelease("right")}
-                className={buttonClass}
+                onClick={() => handleSprayClick("right")}
+                className={`${sprayButtonBaseClasses} ${sprayButtonArrowModeSize} ${sprayRightActive ? sprayActiveColorClasses : sprayInactiveColorClasses}`}
               >
                 Spray Right
               </button>
@@ -710,20 +692,14 @@ function App() {
               </div>
               <div className="flex justify-center space-x-4">
                 <button
-                  onMouseDown={(e) => handleSprayPress("left", e)}
-                  onMouseUp={() => handleSprayRelease("left")}
-                  onTouchStart={(e) => handleSprayPress("left", e)}
-                  onTouchEnd={() => handleSprayRelease("left")}
-                  className={sprayButtonJoystickClass}
+                  onClick={() => handleSprayClick("left")}
+                  className={`${sprayButtonBaseClasses} ${sprayButtonJoystickModeSize} ${sprayLeftActive ? sprayActiveColorClasses : sprayInactiveColorClasses}`}
                 >
                   Spray Left
                 </button>
                 <button
-                  onMouseDown={(e) => handleSprayPress("right", e)}
-                  onMouseUp={() => handleSprayRelease("right")}
-                  onTouchStart={(e) => handleSprayPress("right", e)}
-                  onTouchEnd={() => handleSprayRelease("right")}
-                  className={sprayButtonJoystickClass}
+                  onClick={() => handleSprayClick("right")}
+                  className={`${sprayButtonBaseClasses} ${sprayButtonJoystickModeSize} ${sprayRightActive ? sprayActiveColorClasses : sprayInactiveColorClasses}`}
                 >
                   Spray Right
                 </button>
@@ -838,9 +814,9 @@ function App() {
 
       <div className="mt-8 text-gray-500 text-sm text-center pb-4">
         {mode === CONTROL_MODE.ARROWS ? (
-          <p>Press and hold the on-screen arrow buttons to control direction and spray.</p>
+          <p>Click the spray buttons to activate spray. Press and hold arrow buttons for direction.</p>
         ) : (
-          <p>Drag the joystick to control direction. Use the buttons below for spray.</p>
+          <p>Drag the joystick to control direction. Click the spray buttons to activate spray.</p>
         )}
         <p>Adjust the slider to control PWM (speed).</p>
       </div>
