@@ -31,8 +31,8 @@ const CONTROL_MODE = {
 };
 
 // Camera Stream URLs
-const BASE_CAMERA_STREAM_URL = "https://e15e7eb1c41e.ngrok.app/stream";
-const MOBILE_CAMERA_STREAM_URL = "https://e15e7eb1c41e.ngrok.app/stream";
+const BASE_CAMERA_STREAM_URL = "https://rccarcam.ap.ngrok.io/stream";
+const MOBILE_CAMERA_STREAM_URL = "https://rccarcam.ap.ngrok.io/stream";
 
 // Google Maps API Key - Note: This key appears to be a placeholder or publicly exposed. Be cautious with API keys.
 const MAPS_API_KEY = "AIzaSyCzEccIZNFiLG8VnIp-btN5IYXZkZkb7Kc";
